@@ -297,9 +297,36 @@ class SimpleNetworkService: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: "RecentSources") else { return }
         
         do {
-            recentSources = try PropertyListDecoder().decode([RecentSource].self, from: data)
-            // Sort by last accessed date (most recent first) and limit to 5
-            recentSources = Array(recentSources.sorted { $0.lastAccessed > $1.lastAccessed }.prefix(5))
+            let loadedSources = try PropertyListDecoder().decode([RecentSource].self, from: data)
+            
+            // Remove duplicates by keeping only the most recent entry for each server/folder
+            var uniqueSources: [RecentSource] = []
+            var seenServerIDs: Set<UUID> = []
+            var seenFolderIDs: Set<UUID> = []
+            
+            for source in loadedSources.sorted { $0.lastAccessed > $1.lastAccessed } {
+                var shouldAdd = false
+                
+                if source.type == .server, let serverID = source.serverID {
+                    if !seenServerIDs.contains(serverID) {
+                        seenServerIDs.insert(serverID)
+                        shouldAdd = true
+                    }
+                } else if source.type == .folder, let folderID = source.folderID {
+                    if !seenFolderIDs.contains(folderID) {
+                        seenFolderIDs.insert(folderID)
+                        shouldAdd = true
+                    }
+                }
+                
+                if shouldAdd {
+                    uniqueSources.append(source)
+                }
+            }
+            
+            // Keep only the 5 most recent unique sources
+            recentSources = Array(uniqueSources.prefix(5))
+            
         } catch {
             print("Failed to load recent sources: \(error)")
             recentSources = []
@@ -316,11 +343,11 @@ class SimpleNetworkService: ObservableObject {
     }
     
     private func addRecentSource(_ source: RecentSource) {
-        // Remove any existing source with the same ID
+        // Remove any existing source with the same server/folder ID to prevent duplicates
         if source.type == .server, let serverID = source.serverID {
-            recentSources.removeAll { $0.serverID == serverID }
+            recentSources.removeAll { $0.type == .server && $0.serverID == serverID }
         } else if source.type == .folder, let folderID = source.folderID {
-            recentSources.removeAll { $0.folderID == folderID }
+            recentSources.removeAll { $0.type == .folder && $0.folderID == folderID }
         }
         
         // Add the new source at the beginning
