@@ -218,20 +218,24 @@ struct RecentSource: Identifiable, Codable {
 
 // MARK: - Samba Server Model
 class SambaServer {
-    let id = UUID()
+    let id: UUID
     var name: String
     var host: String
     var port: Int16
     var username: String?
     var password: String?
     
-    init(name: String, host: String, port: Int16 = 445, username: String? = nil, password: String? = nil) {
+    init(name: String, host: String, port: Int16 = 445, username: String? = nil, password: String? = nil, id: UUID? = nil) {
+        self.id = id ?? UUID()
         self.name = name
         self.host = host
         self.port = port
         self.username = username
         self.password = password
     }
+    
+    // Static UUID for demo server to prevent duplicates
+    static let demoServerID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 }
 
 // MARK: - Enhanced Network Service
@@ -308,8 +312,8 @@ class SimpleNetworkService: ObservableObject {
     
     private func loadSavedServers() {
         // In a real app, this would load from UserDefaults or Core Data
-        // For demo, add a sample server
-        let demoServer = SambaServer(name: "Demo Server", host: "192.168.1.100")
+        // For demo, add a sample server with consistent UUID to prevent duplicates in recent sources
+        let demoServer = SambaServer(name: "Demo Server", host: "192.168.1.100", id: SambaServer.demoServerID)
         savedServers = [demoServer]
     }
     
@@ -364,22 +368,27 @@ class SimpleNetworkService: ObservableObject {
         do {
             let loadedSources = try PropertyListDecoder().decode([RecentSource].self, from: data)
             
-            // Remove duplicates by keeping only the most recent entry for each server/folder
+            // Enhanced deduplication by keeping only the most recent entry for each server/folder
+            // This also handles duplicates by name for additional protection
             var uniqueSources: [RecentSource] = []
             var seenServerIDs: Set<UUID> = []
             var seenFolderIDs: Set<UUID> = []
+            var seenServerNames: Set<String> = []
+            var seenFolderNames: Set<String> = []
             
             for source in loadedSources.sorted { $0.lastAccessed > $1.lastAccessed } {
                 var shouldAdd = false
                 
                 if source.type == .server, let serverID = source.serverID {
-                    if !seenServerIDs.contains(serverID) {
+                    if !seenServerIDs.contains(serverID) && !seenServerNames.contains(source.name) {
                         seenServerIDs.insert(serverID)
+                        seenServerNames.insert(source.name)
                         shouldAdd = true
                     }
                 } else if source.type == .folder, let folderID = source.folderID {
-                    if !seenFolderIDs.contains(folderID) {
+                    if !seenFolderIDs.contains(folderID) && !seenFolderNames.contains(source.name) {
                         seenFolderIDs.insert(folderID)
+                        seenFolderNames.insert(source.name)
                         shouldAdd = true
                     }
                 }
@@ -391,6 +400,9 @@ class SimpleNetworkService: ObservableObject {
             
             // Keep only the 5 most recent unique sources
             recentSources = Array(uniqueSources.prefix(5))
+            
+            // Save the cleaned up sources back to UserDefaults
+            saveRecentSources()
             
         } catch {
             print("Failed to load recent sources: \(error)")
@@ -408,11 +420,23 @@ class SimpleNetworkService: ObservableObject {
     }
     
     private func addRecentSource(_ source: RecentSource) {
-        // Remove any existing source with the same server/folder ID to prevent duplicates
+        // Enhanced deduplication: Remove any existing source with the same server/folder ID OR name
         if source.type == .server, let serverID = source.serverID {
-            recentSources.removeAll { $0.type == .server && $0.serverID == serverID }
+            recentSources.removeAll { existing in
+                if existing.type == .server {
+                    // Remove if same ID OR same name (for additional protection)
+                    return existing.serverID == serverID || existing.name == source.name
+                }
+                return false
+            }
         } else if source.type == .folder, let folderID = source.folderID {
-            recentSources.removeAll { $0.type == .folder && $0.folderID == folderID }
+            recentSources.removeAll { existing in
+                if existing.type == .folder {
+                    // Remove if same ID OR same name
+                    return existing.folderID == folderID || existing.name == source.name
+                }
+                return false
+            }
         }
         
         // Add the new source at the beginning
