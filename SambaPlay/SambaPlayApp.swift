@@ -48,6 +48,50 @@ enum AudioPlayerState: Equatable {
     case error(String)
 }
 
+// MARK: - Folder History Model
+class LocalFolder: Codable {
+    let id: UUID
+    var name: String
+    var bookmarkData: Data
+    var dateAdded: Date
+    var lastAccessed: Date
+    
+    init(name: String, bookmarkData: Data) {
+        self.id = UUID()
+        self.name = name
+        self.bookmarkData = bookmarkData
+        self.dateAdded = Date()
+        self.lastAccessed = Date()
+    }
+    
+    func updateLastAccessed() {
+        lastAccessed = Date()
+    }
+    
+    // MARK: - Codable
+    private enum CodingKeys: String, CodingKey {
+        case id, name, bookmarkData, dateAdded, lastAccessed
+    }
+    
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        bookmarkData = try container.decode(Data.self, forKey: .bookmarkData)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        lastAccessed = try container.decode(Date.self, forKey: .lastAccessed)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(bookmarkData, forKey: .bookmarkData)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        try container.encode(lastAccessed, forKey: .lastAccessed)
+    }
+}
+
 // MARK: - Samba Server Model
 class SambaServer {
     let id = UUID()
@@ -72,7 +116,9 @@ class SimpleNetworkService: ObservableObject {
     @Published var currentFiles: [MediaFile] = []
     @Published var currentPath: String = ""
     @Published var savedServers: [SambaServer] = []
+    @Published var savedFolders: [LocalFolder] = []
     @Published var currentServer: SambaServer?
+    @Published var currentFolder: LocalFolder?
     @Published var pathHistory: [String] = []
     @Published var isLocalMode: Bool = false
     
@@ -81,6 +127,7 @@ class SimpleNetworkService: ObservableObject {
     init() {
         setupDemoData()
         loadSavedServers()
+        loadSavedFolders()
     }
     
     private func setupDemoData() {
@@ -146,6 +193,41 @@ class SimpleNetworkService: ObservableObject {
         // In a real app, remove from UserDefaults or Core Data
     }
     
+    private func loadSavedFolders() {
+        guard let data = UserDefaults.standard.data(forKey: "SavedFolders") else { return }
+        
+        do {
+            savedFolders = try PropertyListDecoder().decode([LocalFolder].self, from: data)
+        } catch {
+            print("Failed to load saved folders: \(error)")
+            savedFolders = []
+        }
+    }
+    
+    private func saveFolders() {
+        do {
+            let data = try PropertyListEncoder().encode(savedFolders)
+            UserDefaults.standard.set(data, forKey: "SavedFolders")
+        } catch {
+            print("Failed to save folders: \(error)")
+        }
+    }
+    
+    func addFolder(_ folder: LocalFolder) {
+        // Remove any existing folder with the same bookmark data to avoid duplicates
+        savedFolders.removeAll { existingFolder in
+            existingFolder.bookmarkData == folder.bookmarkData
+        }
+        
+        savedFolders.append(folder)
+        saveFolders()
+    }
+    
+    func removeFolder(_ folder: LocalFolder) {
+        savedFolders.removeAll { $0.id == folder.id }
+        saveFolders()
+    }
+    
     func connect(to server: SambaServer) {
         isLocalMode = false
         currentServer = server
@@ -160,10 +242,90 @@ class SimpleNetworkService: ObservableObject {
     func connectToLocalFiles() {
         isLocalMode = true
         currentServer = nil
+        currentFolder = nil
         connectionState = .connected
         currentPath = "Local Files"
         pathHistory = []
         currentFiles = []
+    }
+    
+    func connectToFolder(_ folder: LocalFolder) {
+        isLocalMode = true
+        currentServer = nil
+        currentFolder = folder
+        folder.updateLastAccessed()
+        saveFolders()
+        
+        connectionState = .connecting
+        
+        // Try to access the bookmarked folder
+        var isStale = false
+        do {
+            let url = try URL(resolvingBookmarkData: folder.bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
+            
+            if isStale {
+                // Bookmark is stale, we'll need the user to re-select the folder
+                connectionState = .error("Folder bookmark is outdated. Please re-select the folder.")
+                return
+            }
+            
+            // iOS doesn't support security-scoped resources in the same way as macOS
+            // We'll rely on the document picker's granted access
+            
+            // Load files from the folder
+            loadFilesFromURL(url)
+            
+            connectionState = .connected
+            currentPath = folder.name
+            pathHistory = []
+            
+            // Stop accessing the security-scoped resource (not needed on iOS)
+            // url.stopAccessingSecurityScopedResource()
+            
+        } catch {
+            connectionState = .error("Unable to access folder: \(error.localizedDescription)")
+        }
+    }
+    
+    private func loadFilesFromURL(_ url: URL) {
+        do {
+            let fileManager = FileManager.default
+            let contents = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey], options: [.skipsHiddenFiles])
+            
+            var files: [MediaFile] = []
+            
+            for fileURL in contents {
+                let resourceValues = try fileURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                let isDirectory = resourceValues.isDirectory ?? false
+                let fileSize = resourceValues.fileSize ?? 0
+                let modificationDate = resourceValues.contentModificationDate ?? Date()
+                
+                let mediaFile = MediaFile(
+                    name: fileURL.lastPathComponent,
+                    path: fileURL.path,
+                    size: Int64(fileSize),
+                    modificationDate: modificationDate,
+                    isDirectory: isDirectory,
+                    fileExtension: isDirectory ? nil : fileURL.pathExtension.lowercased()
+                )
+                
+                files.append(mediaFile)
+            }
+            
+            // Sort files: directories first, then by name
+            files.sort { lhs, rhs in
+                if lhs.isDirectory != rhs.isDirectory {
+                    return lhs.isDirectory && !rhs.isDirectory
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            
+            currentFiles = files
+            
+        } catch {
+            connectionState = .error("Unable to read folder contents: \(error.localizedDescription)")
+            currentFiles = []
+        }
     }
     
     func navigateToPath(_ path: String) {
@@ -903,6 +1065,32 @@ class MainViewController: UIViewController {
     }
     
     private func showDocumentPicker() {
+        let alert = UIAlertController(title: "Select Files", message: "Choose how you want to select files", preferredStyle: .actionSheet)
+        
+        alert.addAction(UIAlertAction(title: "Select Individual Files", style: .default) { _ in
+            self.showFileDocumentPicker()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Select Folder", style: .default) { _ in
+            self.showFolderDocumentPicker()
+        })
+        
+        if !coordinator.networkService.savedFolders.isEmpty {
+            alert.addAction(UIAlertAction(title: "Open Saved Folder", style: .default) { _ in
+                self.showSavedFolders()
+            })
+        }
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
+        
+        present(alert, animated: true)
+    }
+    
+    private func showFileDocumentPicker() {
         let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [
             UTType.audio,
             UTType.mp3,
@@ -913,6 +1101,19 @@ class MainViewController: UIViewController {
         documentPicker.delegate = self
         documentPicker.allowsMultipleSelection = true
         present(documentPicker, animated: true)
+    }
+    
+    private func showFolderDocumentPicker() {
+        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder])
+        documentPicker.delegate = self
+        documentPicker.allowsMultipleSelection = false
+        present(documentPicker, animated: true)
+    }
+    
+    private func showSavedFolders() {
+        let folderListVC = FolderHistoryViewController(networkService: coordinator.networkService)
+        let nav = UINavigationController(rootViewController: folderListVC)
+        present(nav, animated: true)
     }
     
     @objc private func showNowPlaying() {
@@ -2324,6 +2525,49 @@ class AudioSettingsViewController: UIViewController {
 // MARK: - UIDocumentPickerDelegate Extension
 extension MainViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        
+        // Check if this is a folder selection
+        let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        
+        if isFolder {
+            // Handle folder selection - create security-scoped bookmark
+            handleFolderSelection(url)
+        } else {
+            // Handle individual file selection
+            handleFileSelection(urls)
+        }
+    }
+    
+    private func handleFolderSelection(_ url: URL) {
+        do {
+            // Create security-scoped bookmark for the folder
+            let bookmarkData = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            
+            // Create LocalFolder object
+            let folder = LocalFolder(name: url.lastPathComponent, bookmarkData: bookmarkData)
+            
+            // Add to network service
+            coordinator.networkService.addFolder(folder)
+            
+            // Connect to the folder
+            coordinator.networkService.connectToFolder(folder)
+            
+            // Update UI
+            DispatchQueue.main.async {
+                self.updateConnectionStatus(.connected)
+            }
+            
+        } catch {
+            DispatchQueue.main.async {
+                let alert = UIAlertController(title: "Error", message: "Failed to bookmark folder: \(error.localizedDescription)", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(alert, animated: true)
+            }
+        }
+    }
+    
+    private func handleFileSelection(_ urls: [URL]) {
         var localFiles: [MediaFile] = []
         
         for url in urls {
@@ -2521,5 +2765,132 @@ extension ServerManagementViewController: UITableViewDataSource, UITableViewDele
     
     func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
         return true
+    }
+}
+
+// MARK: - Folder History View Controller
+class FolderHistoryViewController: UIViewController {
+    private let networkService: SimpleNetworkService
+    private var cancellables = Set<AnyCancellable>()
+    
+    private lazy var tableView: UITableView = {
+        let tableView = UITableView(frame: .zero, style: .insetGrouped)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "FolderCell")
+        return tableView
+    }()
+    
+    init(networkService: SimpleNetworkService) {
+        self.networkService = networkService
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        title = "Saved Folders"
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(dismissViewController))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addFolder))
+        
+        setupUI()
+        setupBindings()
+    }
+    
+    private func setupUI() {
+        view.addSubview(tableView)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+    
+    private func setupBindings() {
+        networkService.$savedFolders
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
+    }
+    
+    @objc private func dismissViewController() {
+        dismiss(animated: true)
+    }
+    
+    @objc private func addFolder() {
+        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder])
+        documentPicker.delegate = self
+        documentPicker.allowsMultipleSelection = false
+        present(documentPicker, animated: true)
+    }
+}
+
+// MARK: - Folder History Table View
+extension FolderHistoryViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return networkService.savedFolders.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "FolderCell", for: indexPath)
+        let folder = networkService.savedFolders[indexPath.row]
+        
+        cell.textLabel?.text = folder.name
+        cell.detailTextLabel?.text = "Added: \(DateFormatter.localizedString(from: folder.dateAdded, dateStyle: .short, timeStyle: .short))"
+        cell.imageView?.image = UIImage(systemName: "folder.fill")
+        cell.accessoryType = .disclosureIndicator
+        
+        return cell
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        let folder = networkService.savedFolders[indexPath.row]
+        networkService.connectToFolder(folder)
+        dismiss(animated: true)
+    }
+    
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        if editingStyle == .delete {
+            let folder = networkService.savedFolders[indexPath.row]
+            networkService.removeFolder(folder)
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        return true
+    }
+}
+
+// MARK: - Folder History Document Picker
+extension FolderHistoryViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        
+        do {
+            let bookmarkData = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            let folder = LocalFolder(name: url.lastPathComponent, bookmarkData: bookmarkData)
+            networkService.addFolder(folder)
+        } catch {
+            let alert = UIAlertController(title: "Error", message: "Failed to bookmark folder: \(error.localizedDescription)", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+        }
+    }
+    
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // User cancelled, do nothing
     }
 } 
