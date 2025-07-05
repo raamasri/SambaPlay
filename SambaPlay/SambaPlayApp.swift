@@ -160,9 +160,15 @@ class SimpleNetworkService: ObservableObject {
     }
     
     private func loadSavedServers() {
-        // For demo purposes, create a simple server list
-        // In real implementation, this would load from Core Data
-        savedServers = []
+        // For demo purposes, create a simple server list with a built-in demo server
+        let server = SambaServer(context: context)
+        server.name = "Demo Server"
+        server.host = "demo.local"
+        server.port = 445
+        server.username = ""
+        server.password = ""
+        server.createdDate = Date()
+        savedServers = [server]
     }
     
     func addServer(name: String, host: String, port: Int32 = 445, username: String = "", password: String = "") {
@@ -593,6 +599,10 @@ class SambaPlayCoordinator: ObservableObject {
         viewController.present(navController, animated: true)
     }
     
+    func createMainViewController() -> UIViewController {
+        return MainViewController(coordinator: self)
+    }
+    
     func showRecentFiles(from viewController: UIViewController) {
         let alert = UIAlertController(title: "Recent Files", message: "Choose a recent file to resume playback", preferredStyle: .actionSheet)
         
@@ -651,68 +661,15 @@ class SambaPlayCoordinator: ObservableObject {
         let seconds = Int(time) % 60
         return String(format: "%d:%02d", minutes, seconds)
     }
-    
-    func createMainViewController() -> UIViewController {
-        return MainViewController(coordinator: self)
-    }
 }
 
 // MARK: - Main View Controller
 class MainViewController: UIViewController {
     private let coordinator: SambaPlayCoordinator
+    private var tableView: UITableView!
+    private var connectionStateLabel: UILabel!
+    private var connectButton: UIButton!
     private var cancellables = Set<AnyCancellable>()
-    
-    // UI Components
-    private lazy var tableView: UITableView = {
-        let table = UITableView(frame: .zero, style: .insetGrouped)
-        table.translatesAutoresizingMaskIntoConstraints = false
-        table.delegate = self
-        table.dataSource = self
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "FileCell")
-        return table
-    }()
-    
-    private lazy var connectionStatusLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.textAlignment = .center
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.textColor = .systemBlue
-        return label
-    }()
-    
-    private lazy var pathLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.textAlignment = .center
-        label.font = .systemFont(ofSize: 12, weight: .regular)
-        label.textColor = .secondaryLabel
-        label.numberOfLines = 1
-        return label
-    }()
-    
-    private lazy var backButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("← Back", for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
-        button.addTarget(self, action: #selector(navigateBack), for: .touchUpInside)
-        button.isHidden = true
-        return button
-    }()
-    
-    private lazy var nowPlayingButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("Now Playing", for: .normal)
-        button.backgroundColor = .systemBlue
-        button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 8
-        button.addTarget(self, action: #selector(showNowPlaying), for: .touchUpInside)
-        return button
-    }()
-    
-    private var currentFiles: [MediaFile] = []
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -727,248 +684,193 @@ class MainViewController: UIViewController {
         super.viewDidLoad()
         setupUI()
         setupBindings()
-        connectToDemo()
     }
     
     private func setupUI() {
         title = "SambaPlay"
         view.backgroundColor = .systemBackground
         
-        navigationController?.navigationBar.prefersLargeTitles = true
-        
         // Navigation bar buttons
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "server.rack"),
-            style: .plain,
-            target: self,
-            action: #selector(showServers)
-        )
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Servers", style: .plain, target: self, action: #selector(showServerManagement))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Recent", style: .plain, target: self, action: #selector(showRecentFiles))
         
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "folder"),
-            style: .plain,
-            target: self,
-            action: #selector(showLocalFiles)
-        )
+        // Connection state label
+        connectionStateLabel = UILabel()
+        connectionStateLabel.translatesAutoresizingMaskIntoConstraints = false
+        connectionStateLabel.text = "Not Connected"
+        connectionStateLabel.textAlignment = .center
+        connectionStateLabel.font = .systemFont(ofSize: 16, weight: .medium)
+        connectionStateLabel.textColor = .systemGray
+        view.addSubview(connectionStateLabel)
         
-        view.addSubview(connectionStatusLabel)
-        view.addSubview(pathLabel)
-        view.addSubview(backButton)
+        // Connect button
+        connectButton = UIButton(type: .system)
+        connectButton.translatesAutoresizingMaskIntoConstraints = false
+        connectButton.setTitle("Connect to Demo Server", for: .normal)
+        connectButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
+        connectButton.backgroundColor = .systemBlue
+        connectButton.setTitleColor(.white, for: .normal)
+        connectButton.layer.cornerRadius = 8
+        connectButton.addTarget(self, action: #selector(connectToDemo), for: .touchUpInside)
+        view.addSubview(connectButton)
+        
+        // Table view for files
+        tableView = UITableView(frame: .zero, style: .insetGrouped)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "FileCell")
+        tableView.isHidden = true
         view.addSubview(tableView)
-        view.addSubview(nowPlayingButton)
         
+        // Layout constraints
         NSLayoutConstraint.activate([
-            connectionStatusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            connectionStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            connectionStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            connectionStateLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            connectionStateLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            connectionStateLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
-            pathLabel.topAnchor.constraint(equalTo: connectionStatusLabel.bottomAnchor, constant: 4),
-            pathLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            pathLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            connectButton.topAnchor.constraint(equalTo: connectionStateLabel.bottomAnchor, constant: 20),
+            connectButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
+            connectButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
+            connectButton.heightAnchor.constraint(equalToConstant: 50),
             
-            backButton.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 8),
-            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            backButton.heightAnchor.constraint(equalToConstant: 32),
-            
-            tableView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: nowPlayingButton.topAnchor, constant: -8),
-            
-            nowPlayingButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            nowPlayingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            nowPlayingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            nowPlayingButton.heightAnchor.constraint(equalToConstant: 44)
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
     
     private func setupBindings() {
+        // Observe connection state changes
         coordinator.networkService.$connectionState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                self?.updateConnectionStatus(state)
+                self?.updateConnectionState(state)
             }
             .store(in: &cancellables)
         
+        // Observe file changes
         coordinator.networkService.$currentFiles
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] files in
-                self?.currentFiles = files
+            .sink { [weak self] _ in
                 self?.tableView.reloadData()
             }
             .store(in: &cancellables)
-        
-        coordinator.networkService.$currentPath
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] path in
-                self?.pathLabel.text = path.isEmpty ? "No path" : path
-            }
-            .store(in: &cancellables)
-        
-        coordinator.networkService.$pathHistory
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] history in
-                self?.backButton.isHidden = !(self?.coordinator.networkService.canNavigateBack() ?? false)
-            }
-            .store(in: &cancellables)
     }
     
-    private func updateConnectionStatus(_ state: NetworkConnectionState) {
+    private func updateConnectionState(_ state: NetworkConnectionState) {
         switch state {
         case .disconnected:
-            connectionStatusLabel.text = "Disconnected"
-            connectionStatusLabel.textColor = .systemRed
+            connectionStateLabel.text = "Not Connected"
+            connectionStateLabel.textColor = .systemGray
+            connectButton.isHidden = false
+            tableView.isHidden = true
+            
         case .connecting:
-            connectionStatusLabel.text = "Connecting..."
-            connectionStatusLabel.textColor = .systemOrange
+            connectionStateLabel.text = "Connecting..."
+            connectionStateLabel.textColor = .systemBlue
+            connectButton.isHidden = true
+            tableView.isHidden = true
+            
         case .connected:
-            connectionStatusLabel.text = "Connected"
-            connectionStatusLabel.textColor = .systemGreen
+            if let server = coordinator.networkService.currentServer {
+                connectionStateLabel.text = "Connected to \(server.name)"
+            } else if coordinator.networkService.isLocalMode {
+                connectionStateLabel.text = "Local Files"
+            } else {
+                connectionStateLabel.text = "Connected"
+            }
+            connectionStateLabel.textColor = .systemGreen
+            connectButton.isHidden = true
+            tableView.isHidden = false
+            
         case .error(let message):
-            connectionStatusLabel.text = "Error: \(message)"
-            connectionStatusLabel.textColor = .systemRed
+            connectionStateLabel.text = "Error: \(message)"
+            connectionStateLabel.textColor = .systemRed
+            connectButton.isHidden = false
+            tableView.isHidden = true
         }
     }
     
-    private func connectToDemo() {
-        if let demoServer = coordinator.networkService.savedServers.first {
+    @objc private func connectToDemo() {
+        // Connect to the demo server
+        if let demoServer = coordinator.networkService.savedServers.first(where: { $0.name == "Demo Server" }) {
             coordinator.networkService.connect(to: demoServer)
         }
     }
     
-    @objc private func navigateBack() {
-        coordinator.networkService.navigateBack()
+    @objc private func showServerManagement() {
+        let serverVC = ServerManagementViewController(coordinator: coordinator)
+        let navController = UINavigationController(rootViewController: serverVC)
+        present(navController, animated: true)
     }
     
-    @objc private func showLocalFiles() {
-        coordinator.networkService.connectToLocalFiles()
-        showDocumentPicker()
-    }
-    
-    @objc private func showServers() {
-        let alert = UIAlertController(title: "Servers", message: "Connect to a Samba server", preferredStyle: .actionSheet)
-        
-        // Add existing servers
-        for server in coordinator.networkService.savedServers {
-            alert.addAction(UIAlertAction(title: server.name, style: .default) { _ in
-                self.coordinator.networkService.connect(to: server)
-            })
-        }
-        
-        alert.addAction(UIAlertAction(title: "Add New Server", style: .default) { _ in
-            self.showAddServerDialog()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Manage Servers", style: .default) { _ in
-            self.showServerManagement()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        if let popover = alert.popoverPresentationController {
-            popover.barButtonItem = navigationItem.rightBarButtonItem
-        }
-        
-        present(alert, animated: true)
-    }
-    
-    private func showAddServerDialog() {
-        let alert = UIAlertController(title: "Add Samba Server", message: "Enter server details", preferredStyle: .alert)
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Server Name"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Host (IP or hostname)"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Port (optional, default 445)"
-            textField.keyboardType = .numberPad
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Username (optional)"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Password (optional)"
-            textField.isSecureTextEntry = true
-        }
-        
-        alert.addAction(UIAlertAction(title: "Add", style: .default) { _ in
-            guard let nameField = alert.textFields?[0],
-                  let hostField = alert.textFields?[1],
-                  let name = nameField.text, !name.isEmpty,
-                  let host = hostField.text, !host.isEmpty else {
-                let errorAlert = UIAlertController(title: "Error", message: "Please enter server name and host", preferredStyle: .alert)
-                errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
-                self.present(errorAlert, animated: true)
-                return
-            }
-            
-            let portText = alert.textFields?[2].text ?? ""
-            let port = Int32(portText) ?? 445
-            let username = alert.textFields?[3].text ?? ""
-            let password = alert.textFields?[4].text ?? ""
-            
-            self.coordinator.networkService.addServer(name: name, host: host, port: port, username: username, password: password)
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        present(alert, animated: true)
-    }
-    
-    private func showServerManagement() {
-        let serverListVC = ServerManagementViewController(networkService: coordinator.networkService)
-        let nav = UINavigationController(rootViewController: serverListVC)
-        present(nav, animated: true)
-    }
-    
-    private func showDocumentPicker() {
-        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [
-            UTType.audio,
-            UTType.mp3,
-            UTType.mpeg4Audio,
-            UTType.wav,
-            UTType.aiff
-        ])
-        documentPicker.delegate = self
-        documentPicker.allowsMultipleSelection = true
-        present(documentPicker, animated: true)
-    }
-    
-    @objc private func showNowPlaying() {
-        let nowPlayingVC = SimpleNowPlayingViewController(coordinator: coordinator)
-        let nav = UINavigationController(rootViewController: nowPlayingVC)
-        present(nav, animated: true)
+    @objc private func showRecentFiles() {
+        coordinator.showRecentFiles(from: self)
     }
 }
 
-// MARK: - Table View Data Source & Delegate
+// MARK: - Main View Controller Table View
 extension MainViewController: UITableViewDataSource, UITableViewDelegate {
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+    
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return currentFiles.count
+        if section == 0 {
+            // Navigation section
+            return coordinator.networkService.canNavigateBack() ? 1 : 0
+        } else {
+            // Files section
+            return coordinator.networkService.currentFiles.count
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        if section == 0 && coordinator.networkService.canNavigateBack() {
+            return "Navigation"
+        } else if section == 1 && !coordinator.networkService.currentFiles.isEmpty {
+            return coordinator.networkService.currentPath.isEmpty ? "Demo Files" : coordinator.networkService.currentPath
+        }
+        return nil
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "FileCell", for: indexPath)
-        let file = currentFiles[indexPath.row]
         
-        cell.textLabel?.text = file.name
-        cell.detailTextLabel?.text = file.isDirectory ? "Folder" : ByteCountFormatter().string(fromByteCount: file.size)
-        
-        if file.isDirectory {
-            cell.imageView?.image = UIImage(systemName: "folder.fill")
-            cell.accessoryType = .disclosureIndicator
-        } else if file.isAudioFile {
-            cell.imageView?.image = UIImage(systemName: "music.note")
+        if indexPath.section == 0 {
+            // Back button
+            cell.textLabel?.text = "← Back"
+            cell.imageView?.image = UIImage(systemName: "arrow.left")
+            cell.imageView?.tintColor = .systemBlue
             cell.accessoryType = .none
         } else {
-            cell.imageView?.image = UIImage(systemName: "doc.fill")
-            cell.accessoryType = .none
+            // File or directory
+            let file = coordinator.networkService.currentFiles[indexPath.row]
+            cell.textLabel?.text = file.name
+            
+            if file.isDirectory {
+                cell.imageView?.image = UIImage(systemName: "folder.fill")
+                cell.imageView?.tintColor = .systemBlue
+                cell.accessoryType = .disclosureIndicator
+                cell.detailTextLabel?.text = nil
+            } else if file.isAudioFile {
+                cell.imageView?.image = UIImage(systemName: "music.note")
+                cell.imageView?.tintColor = .systemOrange
+                cell.accessoryType = .none
+                cell.detailTextLabel?.text = formatFileSize(file.size)
+            } else if file.isTextFile {
+                cell.imageView?.image = UIImage(systemName: "doc.text")
+                cell.imageView?.tintColor = .systemGreen
+                cell.accessoryType = .none
+                cell.detailTextLabel?.text = formatFileSize(file.size)
+            } else {
+                cell.imageView?.image = UIImage(systemName: "doc")
+                cell.imageView?.tintColor = .systemGray
+                cell.accessoryType = .none
+                cell.detailTextLabel?.text = formatFileSize(file.size)
+            }
         }
         
         return cell
@@ -977,139 +879,29 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         
-        let file = currentFiles[indexPath.row]
-        
-        if file.isDirectory {
-            coordinator.networkService.navigateToDirectory(file.path)
-        } else if file.isAudioFile {
-            playFile(file)
+        if indexPath.section == 0 {
+            // Navigate back
+            coordinator.networkService.navigateBack()
+        } else {
+            // Handle file selection
+            let file = coordinator.networkService.currentFiles[indexPath.row]
+            coordinator.handleFileSelection(file, from: self)
         }
     }
     
-    private func playFile(_ file: MediaFile) {
-        coordinator.audioPlayer.loadFile(file) { [weak self] result in
-            switch result {
-            case .success:
-                self?.coordinator.audioPlayer.play()
-                
-                // Load subtitle if available
-                if file.hasAssociatedTextFile {
-                    let textFile = file.associatedTextFileName
-                    self?.coordinator.networkService.readTextFile(at: textFile) { textResult in
-                        if case .success(let subtitle) = textResult {
-                            DispatchQueue.main.async {
-                                // Subtitle handling would go here
-                                print("📄 Loaded subtitle: \(subtitle.prefix(100))...")
-                            }
-                        }
-                    }
-                }
-                
-                self?.showNowPlaying()
-                
-            case .failure(let error):
-                let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                self?.present(alert, animated: true)
-            }
-        }
+    private func formatFileSize(_ size: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: size)
     }
 }
 
-// MARK: - Enhanced Now Playing View Controller
-class SimpleNowPlayingViewController: UIViewController {
+// MARK: - Server Management View Controller
+class ServerManagementViewController: UIViewController {
     private let coordinator: SambaPlayCoordinator
-    private var cancellables = Set<AnyCancellable>()
-    
-    // UI Components
-    private lazy var titleLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 24, weight: .bold)
-        label.textAlignment = .center
-        label.numberOfLines = 2
-        return label
-    }()
-    
-    private lazy var timeLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedSystemFont(ofSize: 16, weight: .medium)
-        label.textAlignment = .center
-        return label
-    }()
-    
-    private lazy var progressSlider: UISlider = {
-        let slider = UISlider()
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.addTarget(self, action: #selector(progressChanged), for: .valueChanged)
-        return slider
-    }()
-    
-    // Media Control Buttons
-    private lazy var skipBackButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
-        button.addTarget(self, action: #selector(skipBackTapped), for: .touchUpInside)
-        return button
-    }()
-    
-    private lazy var playPauseButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
-        button.addTarget(self, action: #selector(playPauseTapped), for: .touchUpInside)
-        return button
-    }()
-    
-    private lazy var skipForwardButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
-        button.addTarget(self, action: #selector(skipForwardTapped), for: .touchUpInside)
-        return button
-    }()
-    
-    private lazy var controlsStackView: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [skipBackButton, playPauseButton, skipForwardButton])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.distribution = .equalSpacing
-        stack.alignment = .center
-        stack.spacing = 40
-        return stack
-    }()
-    
-    private lazy var settingsButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "slider.horizontal.3", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
-        button.addTarget(self, action: #selector(showSettings), for: .touchUpInside)
-        return button
-    }()
-    
-    private lazy var subtitleTextView: UITextView = {
-        let textView = UITextView()
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.backgroundColor = .secondarySystemBackground
-        textView.layer.cornerRadius = 12
-        textView.font = .systemFont(ofSize: 16)
-        textView.isEditable = false
-        textView.contentInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        textView.layer.borderWidth = 1
-        textView.layer.borderColor = UIColor.separator.cgColor
-        return textView
-    }()
-    
-    private lazy var subtitleHeaderLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "🎵 Lyrics"
-        label.font = .systemFont(ofSize: 18, weight: .semibold)
-        label.textColor = .label
-        return label
-    }()
+    private var tableView: UITableView!
+    private var servers: [SambaServer] = []
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -1123,148 +915,244 @@ class SimpleNowPlayingViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        setupBindings()
-        updateUI()
+        loadServers()
     }
     
     private func setupUI() {
-        title = "Now Playing"
+        title = "Servers"
         view.backgroundColor = .systemBackground
         
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissViewController))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: settingsButton)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissController))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addServer))
         
-        view.addSubview(titleLabel)
-        view.addSubview(timeLabel)
-        view.addSubview(progressSlider)
-        view.addSubview(controlsStackView)
-        view.addSubview(subtitleHeaderLabel)
-        view.addSubview(subtitleTextView)
+        tableView = UITableView(frame: .zero, style: .insetGrouped)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ServerCell")
+        view.addSubview(tableView)
         
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            timeLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
-            timeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            progressSlider.topAnchor.constraint(equalTo: timeLabel.bottomAnchor, constant: 16),
-            progressSlider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            progressSlider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            controlsStackView.topAnchor.constraint(equalTo: progressSlider.bottomAnchor, constant: 32),
-            controlsStackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            controlsStackView.widthAnchor.constraint(equalToConstant: 200),
-            controlsStackView.heightAnchor.constraint(equalToConstant: 60),
-            
-            subtitleHeaderLabel.topAnchor.constraint(equalTo: controlsStackView.bottomAnchor, constant: 32),
-            subtitleHeaderLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            subtitleHeaderLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            subtitleTextView.topAnchor.constraint(equalTo: subtitleHeaderLabel.bottomAnchor, constant: 12),
-            subtitleTextView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            subtitleTextView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            subtitleTextView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20)
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
     
-    private func setupBindings() {
-        coordinator.audioPlayer.$playerState
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                self?.updatePlayButton(state)
-            }
-            .store(in: &cancellables)
-        
-        coordinator.audioPlayer.$currentTime
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] time in
-                self?.updateTime(time)
-            }
-            .store(in: &cancellables)
-        
-        coordinator.audioPlayer.$currentFile
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] file in
-                self?.titleLabel.text = file?.name ?? "No Track"
-            }
-            .store(in: &cancellables)
-        
-        // Subtitle updates would be handled here if implemented
-        // coordinator.audioPlayer.$subtitle...
+    private func loadServers() {
+        servers = coordinator.networkService.savedServers
+        tableView.reloadData()
     }
     
-    private func updateUI() {
-        titleLabel.text = coordinator.audioPlayer.currentFile?.name ?? "No Track"
-        updateTime(coordinator.audioPlayer.currentTime)
-        updatePlayButton(coordinator.audioPlayer.playerState)
-        subtitleTextView.text = "No subtitle available"
-    }
-    
-    private func updatePlayButton(_ state: AudioPlayerState) {
-        switch state {
-        case .playing:
-            playPauseButton.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
-        case .paused, .stopped:
-            playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
-        default:
-            playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
-        }
-    }
-    
-    private func updateTime(_ time: TimeInterval) {
-        let currentMinutes = Int(time) / 60
-        let currentSeconds = Int(time) % 60
-        let totalMinutes = Int(coordinator.audioPlayer.duration) / 60
-        let totalSeconds = Int(coordinator.audioPlayer.duration) % 60
-        
-        timeLabel.text = String(format: "%d:%02d / %d:%02d", currentMinutes, currentSeconds, totalMinutes, totalSeconds)
-        
-        if coordinator.audioPlayer.duration > 0 {
-            progressSlider.value = Float(time / coordinator.audioPlayer.duration)
-        }
-    }
-    
-    @objc private func dismissViewController() {
+    @objc private func dismissController() {
         dismiss(animated: true)
     }
     
-    @objc private func playPauseTapped() {
-        switch coordinator.audioPlayer.playerState {
-        case .playing:
-            coordinator.audioPlayer.pause()
-        case .paused, .stopped:
-            coordinator.audioPlayer.play()
-        default:
-            break
+    @objc private func addServer() {
+        let alert = UIAlertController(title: "Add Server", message: "Enter server details", preferredStyle: .alert)
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Server Name"
+        }
+        alert.addTextField { textField in
+            textField.placeholder = "Host/IP Address"
+        }
+        alert.addTextField { textField in
+            textField.placeholder = "Port (default: 445)"
+            textField.keyboardType = .numberPad
+        }
+        alert.addTextField { textField in
+            textField.placeholder = "Username (optional)"
+        }
+        alert.addTextField { textField in
+            textField.placeholder = "Password (optional)"
+            textField.isSecureTextEntry = true
+        }
+        
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self] _ in
+            guard let textFields = alert.textFields,
+                  let name = textFields[0].text, !name.isEmpty,
+                  let host = textFields[1].text, !host.isEmpty else {
+                return
+            }
+            
+            let portText = textFields[2].text ?? ""
+            let port = Int32(portText) ?? 445
+            let username = textFields[3].text ?? ""
+            let password = textFields[4].text ?? ""
+            
+            self?.coordinator.networkService.addServer(name: name, host: host, port: port, username: username, password: password)
+            self?.loadServers()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
+    }
+}
+
+// MARK: - Server Management Table View
+extension ServerManagementViewController: UITableViewDataSource, UITableViewDelegate {
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 2
+    }
+    
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if section == 0 {
+            return servers.count
+        } else {
+            return 2 // Local Files + Folder History
         }
     }
     
-    @objc private func progressChanged() {
-        let newTime = Double(progressSlider.value) * coordinator.audioPlayer.duration
-        coordinator.audioPlayer.seek(to: newTime)
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "Network Servers" : "Local Access"
     }
     
-    @objc private func skipBackTapped() {
-        let currentTime = coordinator.audioPlayer.currentTime
-        let newTime = max(0, currentTime - 15.0)
-        coordinator.audioPlayer.seek(to: newTime)
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ServerCell", for: indexPath)
+        
+        if indexPath.section == 0 {
+            let server = servers[indexPath.row]
+            cell.textLabel?.text = server.name
+            cell.detailTextLabel?.text = "\(server.host):\(server.port)"
+            cell.imageView?.image = UIImage(systemName: server.name == "Demo Server" ? "tv" : "server.rack")
+            cell.imageView?.tintColor = server.name == "Demo Server" ? .systemOrange : .systemBlue
+            cell.accessoryType = .disclosureIndicator
+        } else {
+            if indexPath.row == 0 {
+                cell.textLabel?.text = "Local Files"
+                cell.detailTextLabel?.text = "Import from Files app"
+                cell.imageView?.image = UIImage(systemName: "folder")
+                cell.imageView?.tintColor = .systemGreen
+                cell.accessoryType = .disclosureIndicator
+            } else {
+                cell.textLabel?.text = "Folder History"
+                cell.detailTextLabel?.text = "Previously imported folders"
+                cell.imageView?.image = UIImage(systemName: "clock.arrow.circlepath")
+                cell.imageView?.tintColor = .systemPurple
+                cell.accessoryType = .disclosureIndicator
+            }
+        }
+        
+        return cell
     }
     
-    @objc private func skipForwardTapped() {
-        let currentTime = coordinator.audioPlayer.currentTime
-        let duration = coordinator.audioPlayer.duration
-        let newTime = min(duration, currentTime + 30.0)
-        coordinator.audioPlayer.seek(to: newTime)
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        if indexPath.section == 0 {
+            let server = servers[indexPath.row]
+            coordinator.networkService.connect(to: server)
+            dismiss(animated: true)
+        } else {
+            if indexPath.row == 0 {
+                // Local Files
+                coordinator.networkService.connectToLocalFiles()
+                dismiss(animated: true)
+                
+                // Show document picker
+                let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+                documentPicker.allowsMultipleSelection = false
+                documentPicker.delegate = self
+                
+                if let presentingVC = presentingViewController {
+                    presentingVC.present(documentPicker, animated: true)
+                }
+            } else {
+                // Folder History
+                dismiss(animated: true) { [weak self] in
+                    if let presentingVC = self?.presentingViewController {
+                        self?.coordinator.showFolderHistory(from: presentingVC)
+                    }
+                }
+            }
+        }
     }
     
-    @objc private func showSettings() {
-        let settingsVC = AudioSettingsViewController(coordinator: coordinator)
-        let nav = UINavigationController(rootViewController: settingsVC)
-        nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true)
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        if editingStyle == .delete && indexPath.section == 0 {
+            let server = servers[indexPath.row]
+            if server.name != "Demo Server" { // Don't allow deleting demo server
+                coordinator.networkService.removeServer(server)
+                servers.remove(at: indexPath.row)
+                tableView.deleteRows(at: [indexPath], with: .fade)
+            }
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        if indexPath.section == 0 {
+            let server = servers[indexPath.row]
+            return server.name != "Demo Server" // Don't allow editing demo server
+        }
+        return false
+    }
+}
+
+// MARK: - Document Picker Delegate
+extension ServerManagementViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        
+        // Create security-scoped bookmark
+        do {
+            let bookmarkData = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+            
+            // Add to folder history
+            let displayName = url.lastPathComponent
+            coordinator.addFolderToHistory(path: url.path, displayName: displayName, bookmarkData: bookmarkData)
+            
+            // Start accessing the folder
+            guard url.startAccessingSecurityScopedResource() else {
+                print("Failed to access security scoped resource")
+                return
+            }
+            
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            // Load files from the folder
+            loadFilesFromLocalFolder(url: url)
+            
+        } catch {
+            print("Failed to create bookmark: \(error)")
+        }
+    }
+    
+    private func loadFilesFromLocalFolder(url: URL) {
+        do {
+            let fileManager = FileManager.default
+            let contents = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
+            
+            var mediaFiles: [MediaFile] = []
+            
+            for fileURL in contents {
+                let resourceValues = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
+                
+                let isDirectory = resourceValues.isDirectory ?? false
+                let fileSize = resourceValues.fileSize ?? 0
+                let modificationDate = resourceValues.contentModificationDate ?? Date()
+                let fileExtension = fileURL.pathExtension.lowercased()
+                
+                let mediaFile = MediaFile(
+                    name: fileURL.lastPathComponent,
+                    path: fileURL.path,
+                    size: Int64(fileSize),
+                    modificationDate: modificationDate,
+                    isDirectory: isDirectory,
+                    fileExtension: fileExtension
+                )
+                
+                mediaFiles.append(mediaFile)
+            }
+            
+            // Update network service with loaded files
+            coordinator.networkService.currentFiles = mediaFiles
+            
+        } catch {
+            print("Failed to load folder contents: \(error)")
+        }
     }
 }
 
@@ -2015,8 +1903,6 @@ class AudioSettingsViewController: UIViewController {
     }
 }
 
-
-
 // MARK: - UIDocumentPickerDelegate Extension
 extension MainViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
@@ -2114,165 +2000,6 @@ extension MainViewController: UIDocumentPickerDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             alert.dismiss(animated: true)
         }
-    }
-}
-
-// MARK: - Server Management View Controller
-class ServerManagementViewController: UIViewController {
-    private let networkService: SimpleNetworkService
-    private var cancellables = Set<AnyCancellable>()
-    
-    private lazy var tableView: UITableView = {
-        let table = UITableView(frame: .zero, style: .insetGrouped)
-        table.translatesAutoresizingMaskIntoConstraints = false
-        table.delegate = self
-        table.dataSource = self
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "ServerCell")
-        return table
-    }()
-    
-    init(networkService: SimpleNetworkService) {
-        self.networkService = networkService
-        super.init(nibName: nil, bundle: nil)
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        setupUI()
-        setupBindings()
-    }
-    
-    private func setupUI() {
-        title = "Manage Servers"
-        view.backgroundColor = .systemBackground
-        
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done,
-            target: self,
-            action: #selector(dismissController)
-        )
-        
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add,
-            target: self,
-            action: #selector(addServer)
-        )
-        
-        view.addSubview(tableView)
-        
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-    }
-    
-    private func setupBindings() {
-        networkService.$savedServers
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.tableView.reloadData()
-            }
-            .store(in: &cancellables)
-    }
-    
-    @objc private func dismissController() {
-        dismiss(animated: true)
-    }
-    
-    @objc private func addServer() {
-        showAddServerDialog()
-    }
-    
-    private func showAddServerDialog() {
-        let alert = UIAlertController(title: "Add Samba Server", message: "Enter server details", preferredStyle: .alert)
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Server Name"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Host (IP or hostname)"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Port (optional, default 445)"
-            textField.keyboardType = .numberPad
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Username (optional)"
-        }
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Password (optional)"
-            textField.isSecureTextEntry = true
-        }
-        
-        alert.addAction(UIAlertAction(title: "Add", style: .default) { _ in
-            guard let nameField = alert.textFields?[0],
-                  let hostField = alert.textFields?[1],
-                  let name = nameField.text, !name.isEmpty,
-                  let host = hostField.text, !host.isEmpty else {
-                let errorAlert = UIAlertController(title: "Error", message: "Please enter server name and host", preferredStyle: .alert)
-                errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
-                self.present(errorAlert, animated: true)
-                return
-            }
-            
-            let portText = alert.textFields?[2].text ?? ""
-            let port = Int32(portText) ?? 445
-            let username = alert.textFields?[3].text ?? ""
-            let password = alert.textFields?[4].text ?? ""
-            
-            self.networkService.addServer(name: name, host: host, port: port, username: username, password: password)
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        present(alert, animated: true)
-    }
-}
-
-// MARK: - Server Management Table View
-extension ServerManagementViewController: UITableViewDataSource, UITableViewDelegate {
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return networkService.savedServers.count
-    }
-    
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "ServerCell", for: indexPath)
-        let server = networkService.savedServers[indexPath.row]
-        
-        cell.textLabel?.text = server.name
-        cell.detailTextLabel?.text = "\(server.host):\(server.port)"
-        cell.imageView?.image = UIImage(systemName: "server.rack")
-        
-        return cell
-    }
-    
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        
-        let server = networkService.savedServers[indexPath.row]
-        networkService.connect(to: server)
-        dismiss(animated: true)
-    }
-    
-    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        if editingStyle == .delete {
-            let server = networkService.savedServers[indexPath.row]
-            networkService.removeServer(server)
-        }
-    }
-    
-    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        return true
     }
 }
 
@@ -3284,5 +3011,4 @@ class NowPlayingViewController: UIViewController {
         dismiss(animated: true)
     }
 }
-
-// ... existing code ... 
+ 

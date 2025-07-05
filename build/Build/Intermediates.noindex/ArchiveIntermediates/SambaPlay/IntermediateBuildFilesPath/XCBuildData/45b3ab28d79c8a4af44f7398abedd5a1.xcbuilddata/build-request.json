@@ -1,0 +1,81 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "607677115b7d1c5fbf6215869f6738c54de5572fe623a78a8bbc963efe325b5b"
+    }
+  ],
+  "containerPath" : "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "install",
+    "activeArchitecture" : "arm64",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : false,
+      "platform" : "iphonesimulator",
+      "sdk" : "iphonesimulator18.5",
+      "sdkVariant" : "iphonesimulator",
+      "supportedArchitectures" : [
+        "arm64",
+        "x86_64"
+      ],
+      "targetArchitecture" : "arm64"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Products",
+      "derivedDataPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build",
+      "indexDataStoreFolderPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Release",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "install",
+          "ASSET_PACK_FOLDER_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/InstallationBuildProductsLocation/OnDemandResources",
+          "ASSETCATALOG_COMPILER_FLATTENED_APP_ICON_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/ProductIcon.png",
+          "COLOR_DIAGNOSTICS" : "YES",
+          "DEPLOYMENT_LOCATION" : "YES",
+          "DEPLOYMENT_POSTPROCESSING" : "YES",
+          "diagnostic_message_length" : "107",
+          "DSTROOT" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/InstallationBuildProductsLocation",
+          "EMBED_ASSET_PACKS_IN_PRODUCT_BUNDLE" : "NO",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_SIGNATURE_AGGREGATION" : "YES",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "INDEX_ENABLE_DATA_STORE" : "NO",
+          "MESSAGES_APPLICATION_EXTENSION_SUPPORT_FOLDER_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/MessagesApplicationExtensionSupport",
+          "MESSAGES_APPLICATION_SUPPORT_FOLDER_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/MessagesApplicationSupport",
+          "OBJROOT" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath",
+          "ONLY_ACTIVE_ARCH" : "YES",
+          "SHARED_PRECOMPS_DIR" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/PrecompiledHeaders",
+          "SIGNATURE_METADATA_FOLDER_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/Signatures",
+          "SWIFT_STDLIB_TOOL_UNSIGNED_DESTINATION_DIR" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/SwiftSupport",
+          "SYMROOT" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath",
+          "WATCHKIT_2_SUPPORT_FOLDER_PATH" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/BuildProductsPath/WatchKitSupport2"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "archive",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

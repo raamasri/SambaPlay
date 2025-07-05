@@ -1,0 +1,35 @@
+{
+  "" : {
+    "const-values" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master.swiftconstvalues",
+    "dependencies" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master.d",
+    "diagnostics" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master.dia",
+    "emit-module-dependencies" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master-emit-module.d",
+    "emit-module-diagnostics" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master-emit-module.dia",
+    "swift-dependencies" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlay-master.swiftdeps"
+  },
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/AppDelegate.swift" : {
+    "index-unit-output-path" : "/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/AppDelegate.o",
+    "llvm-bc" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/AppDelegate.bc",
+    "object" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/AppDelegate.o"
+  },
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/SambaPlayApp.swift" : {
+    "index-unit-output-path" : "/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlayApp.o",
+    "llvm-bc" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlayApp.bc",
+    "object" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SambaPlayApp.o"
+  },
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/SceneDelegate.swift" : {
+    "index-unit-output-path" : "/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SceneDelegate.o",
+    "llvm-bc" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SceneDelegate.bc",
+    "object" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/SceneDelegate.o"
+  },
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/ViewController.swift" : {
+    "index-unit-output-path" : "/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/ViewController.o",
+    "llvm-bc" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/ViewController.bc",
+    "object" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/ViewController.o"
+  },
+  "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "index-unit-output-path" : "/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/Objects-normal/arm64/GeneratedAssetSymbols.o"
+  }
+}

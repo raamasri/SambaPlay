@@ -1,0 +1,11 @@
+version: "Apple Swift version 6.1.2 (swiftlang-6.1.2.1.2 clang-1700.0.13.5)"
+options: "32520fea6cf8cee317529cc7b791696fb1921682c3277888a87f98db2f1ef5c8"
+build_start_time: [1751696639, 445917000]
+build_end_time: [1751696646, 797421000]
+inputs:
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/AppDelegate.swift": [1751691193, 634107569]
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/SambaPlayApp.swift": [1751696608, 932037669]
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/SceneDelegate.swift": [1751695898, 646784766]
+  "/Users/raamasrivatsan/xcode/SambaPlay/SambaPlay/ViewController.swift": [1751692088, 817929877]
+  ? "/Users/raamasrivatsan/xcode/SambaPlay/build/Build/Intermediates.noindex/ArchiveIntermediates/SambaPlay/IntermediateBuildFilesPath/SambaPlay.build/Release-iphonesimulator/SambaPlay.build/DerivedSources/GeneratedAssetSymbols.swift"
+  : [1751696639, 187151498]
