@@ -919,6 +919,11 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     private var crossfadeEnabled: Bool = true
     private var crossfadeDuration: TimeInterval = 2.0
     
+    // Real audio file tracking
+    private var audioFile: AVAudioFile?
+    private var playbackStartFrame: AVAudioFramePosition = 0
+    private var playbackStartTime: Date?
+    
     func setNetworkService(_ service: SimpleNetworkService) {
         self.networkService = service
     }
@@ -951,10 +956,17 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     }
     
     @objc private func updateTime() {
-        guard playerState == .playing, let startTime = startTime else { return }
+        guard playerState == .playing else { return }
         
-        let elapsed = Date().timeIntervalSince(startTime) * Double(speed)
-        currentTime = min(elapsed, duration)
+        if let file = currentFile, file.name == "Sample Song.mp3" {
+            // For real audio files, use AVAudioPlayerNode time tracking
+            updateRealAudioTime()
+        } else {
+            // For demo files, use timing-based approach
+            guard let startTime = startTime else { return }
+            let elapsed = Date().timeIntervalSince(startTime) * Double(speed)
+            currentTime = min(elapsed, duration)
+        }
         
         // Periodically save position every 10 seconds during playback
         if Int(currentTime) % 10 == 0 && Int(currentTime) > 0 {
@@ -968,6 +980,26 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             }
             stop()
         }
+    }
+    
+    private func updateRealAudioTime() {
+        guard let audioFile = audioFile,
+              let playbackStartTime = playbackStartTime,
+              playerNode.isPlaying else { return }
+        
+        // Calculate the actual playback time based on player node position
+        let elapsedTime = Date().timeIntervalSince(playbackStartTime)
+        let sampleRate = audioFile.fileFormat.sampleRate
+        
+        // Calculate current frame position
+        let elapsedFrames = AVAudioFramePosition(elapsedTime * sampleRate * Double(speed))
+        let currentFrame = playbackStartFrame + elapsedFrames
+        
+        // Convert frame position back to time
+        currentTime = Double(currentFrame) / sampleRate
+        
+        // Ensure we don't exceed the duration
+        currentTime = min(currentTime, duration)
     }
     
     private func saveCurrentPosition() {
@@ -1013,11 +1045,14 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         }
         
         do {
-            let audioFile = try AVAudioFile(forReading: audioURL)
-            duration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
+            let newAudioFile = try AVAudioFile(forReading: audioURL)
+            duration = Double(newAudioFile.length) / newAudioFile.fileFormat.sampleRate
+            
+            // Store the audio file for tracking
+            self.audioFile = newAudioFile
             
             // Detect actual format from file
-            detectAudioFormat(from: audioFile)
+            detectAudioFormat(from: newAudioFile)
             
             // Check for saved position and restore it
             if let savedPosition = networkService?.getSavedPosition(for: file) {
@@ -1028,38 +1063,17 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                 currentTime = 0
             }
             
-            // Load the file into the audio engine with format-specific handling
-            loadAudioFileIntoEngine(audioFile, completion: completion)
+            // Initialize tracking variables
+            playbackStartFrame = 0
+            playbackStartTime = nil
+            
+            completion(.success(()))
             
         } catch {
             completion(.failure(error))
         }
     }
     
-    private func loadAudioFileIntoEngine(_ audioFile: AVAudioFile, completion: @escaping (Result<Void, Error>) -> Void) {
-        // Handle different audio formats with optimized settings
-        let format = audioFile.fileFormat
-        
-        // Configure engine based on format
-        if format.sampleRate > 48000 {
-            // High sample rate files (96kHz, 192kHz)
-            print("High sample rate detected: \(format.sampleRate)Hz")
-        }
-        
-        if format.channelCount > 2 {
-            // Multichannel audio
-            print("Multichannel audio detected: \(format.channelCount) channels")
-        }
-        
-        playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
-            DispatchQueue.main.async {
-                self?.playerState = .stopped
-                // Don't reset currentTime here since we may have restored a position
-            }
-        }
-        
-        completion(.success(()))
-    }
     
     private func detectAudioFormat(from audioFile: AVAudioFile) {
         let format = audioFile.fileFormat
@@ -1151,9 +1165,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             // Always reload the file to ensure proper seeking
             playerNode.stop()
             
-            let audioFile = try AVAudioFile(forReading: audioURL)
-            let sampleRate = audioFile.fileFormat.sampleRate
-            let totalFrames = audioFile.length
+            let newAudioFile = try AVAudioFile(forReading: audioURL)
+            let sampleRate = newAudioFile.fileFormat.sampleRate
+            let totalFrames = newAudioFile.length
             
             // Calculate the frame position to start from (current time)
             let startFrame = AVAudioFramePosition(currentTime * sampleRate)
@@ -1161,10 +1175,15 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             
             if startFrame < totalFrames && framesToPlay > 0 {
                 // Set the file position to the current time
-                audioFile.framePosition = startFrame
+                newAudioFile.framePosition = startFrame
+                
+                // Store the audio file and tracking info
+                self.audioFile = newAudioFile
+                self.playbackStartFrame = startFrame
+                self.playbackStartTime = Date()
                 
                 // Schedule the file from the current position
-                playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                playerNode.scheduleFile(newAudioFile, at: nil) { [weak self] in
                     DispatchQueue.main.async {
                         if self?.playerState == .playing {
                             self?.playerState = .stopped
@@ -1172,8 +1191,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                     }
                 }
                 
-                // Start playback and update timing
-                startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                // Start playback
                 playerNode.play()
             }
         } catch {
@@ -1234,35 +1252,37 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             playerNode.stop()
             
             // Create new audio file instance
-            let audioFile = try AVAudioFile(forReading: audioURL)
-            let sampleRate = audioFile.fileFormat.sampleRate
-            let totalFrames = audioFile.length
+            let newAudioFile = try AVAudioFile(forReading: audioURL)
+            let sampleRate = newAudioFile.fileFormat.sampleRate
+            let totalFrames = newAudioFile.length
             
             // Calculate the frame position to seek to
             let targetFrame = AVAudioFramePosition(time * sampleRate)
             let framesToPlay = totalFrames - targetFrame
             
             if targetFrame < totalFrames && framesToPlay > 0 {
-                // Create a buffer and read from the target position
-                let bufferSize = AVAudioFrameCount(min(framesToPlay, 4096))
-                audioFile.framePosition = targetFrame
+                // Set the file position to the target time
+                newAudioFile.framePosition = targetFrame
+                
+                // Store the audio file and tracking info
+                self.audioFile = newAudioFile
+                self.playbackStartFrame = targetFrame
                 
                 // Schedule the file from the new position
-                playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                playerNode.scheduleFile(newAudioFile, at: nil) { [weak self] in
                     DispatchQueue.main.async {
                         if self?.playerState == .playing {
                             self?.playerState = .stopped
-                            self?.currentTime = self?.duration ?? 0
                         }
                     }
                 }
                 
-                // Update timing and resume playback if it was playing
+                // Resume playback if it was playing
                 if wasPlaying {
-                    startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                    self.playbackStartTime = Date()
                     playerNode.play()
                 } else {
-                    startTime = nil
+                    self.playbackStartTime = nil
                 }
             }
         } catch {
@@ -1410,17 +1430,32 @@ extension SimpleAudioPlayer: URLSessionDownloadDelegate {
             // Detect format from downloaded file
             detectAudioFormat(from: audioFile)
             
-            // Load into engine
-            loadAudioFileIntoEngine(audioFile) { result in
-                switch result {
-                case .success:
-                    self.playerState = .stopped
-                case .failure(let error):
-                    self.playerState = .error("Failed to load audio: \(error.localizedDescription)")
+            // Store audio file for real audio playback
+            self.audioFile = audioFile
+            self.playbackStartFrame = 0
+            
+            playerState = .stopped
+        } catch {
+            playerState = .error("Failed to read downloaded file: \(error.localizedDescription)")
+        }
+    }
+    
+    private func loadAudioFileIntoEngine(_ audioFile: AVAudioFile, completion: @escaping (Result<Void, Error>) -> Void) {
+        do {
+            // Store audio file for real audio playback
+            self.audioFile = audioFile
+            self.playbackStartFrame = 0
+            
+            // Schedule the file on the player node
+            playerNode.scheduleFile(audioFile, at: nil) {
+                DispatchQueue.main.async {
+                    completion(.success(()))
                 }
             }
         } catch {
-            playerState = .error("Failed to read downloaded file: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                completion(.failure(error))
+            }
         }
     }
     
