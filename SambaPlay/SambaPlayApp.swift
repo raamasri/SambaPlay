@@ -1178,6 +1178,97 @@ class SimpleNowPlayingViewController: UIViewController {
         return slider
     }()
     
+    // Speed and Pitch Indicators
+    private lazy var speedPitchContainer: UIView = {
+        let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.backgroundColor = .secondarySystemBackground
+        container.layer.cornerRadius = 12
+        container.layer.borderWidth = 1
+        container.layer.borderColor = UIColor.separator.cgColor
+        container.alpha = 0.0 // Initially hidden
+        
+        // Add tap gesture to open audio settings
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(showSettings))
+        container.addGestureRecognizer(tapGesture)
+        container.isUserInteractionEnabled = true
+        
+        return container
+    }()
+    
+    private lazy var speedIndicatorLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.textAlignment = .center
+        label.textColor = .systemBlue
+        label.text = "1.00×"
+        return label
+    }()
+    
+    private lazy var pitchIndicatorLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.textAlignment = .center
+        label.textColor = .systemPurple
+        label.text = "0♭♯"
+        return label
+    }()
+    
+    private lazy var speedPitchStackView: UIStackView = {
+        let speedContainer = UIView()
+        speedContainer.translatesAutoresizingMaskIntoConstraints = false
+        
+        let speedIcon = UIImageView(image: UIImage(systemName: "speedometer"))
+        speedIcon.translatesAutoresizingMaskIntoConstraints = false
+        speedIcon.tintColor = .systemBlue
+        speedIcon.contentMode = .scaleAspectFit
+        
+        speedContainer.addSubview(speedIcon)
+        speedContainer.addSubview(speedIndicatorLabel)
+        
+        NSLayoutConstraint.activate([
+            speedIcon.leadingAnchor.constraint(equalTo: speedContainer.leadingAnchor),
+            speedIcon.centerYAnchor.constraint(equalTo: speedContainer.centerYAnchor),
+            speedIcon.widthAnchor.constraint(equalToConstant: 16),
+            speedIcon.heightAnchor.constraint(equalToConstant: 16),
+            
+            speedIndicatorLabel.leadingAnchor.constraint(equalTo: speedIcon.trailingAnchor, constant: 4),
+            speedIndicatorLabel.trailingAnchor.constraint(equalTo: speedContainer.trailingAnchor),
+            speedIndicatorLabel.centerYAnchor.constraint(equalTo: speedContainer.centerYAnchor)
+        ])
+        
+        let pitchContainer = UIView()
+        pitchContainer.translatesAutoresizingMaskIntoConstraints = false
+        
+        let pitchIcon = UIImageView(image: UIImage(systemName: "tuningfork"))
+        pitchIcon.translatesAutoresizingMaskIntoConstraints = false
+        pitchIcon.tintColor = .systemPurple
+        pitchIcon.contentMode = .scaleAspectFit
+        
+        pitchContainer.addSubview(pitchIcon)
+        pitchContainer.addSubview(pitchIndicatorLabel)
+        
+        NSLayoutConstraint.activate([
+            pitchIcon.leadingAnchor.constraint(equalTo: pitchContainer.leadingAnchor),
+            pitchIcon.centerYAnchor.constraint(equalTo: pitchContainer.centerYAnchor),
+            pitchIcon.widthAnchor.constraint(equalToConstant: 16),
+            pitchIcon.heightAnchor.constraint(equalToConstant: 16),
+            
+            pitchIndicatorLabel.leadingAnchor.constraint(equalTo: pitchIcon.trailingAnchor, constant: 4),
+            pitchIndicatorLabel.trailingAnchor.constraint(equalTo: pitchContainer.trailingAnchor),
+            pitchIndicatorLabel.centerYAnchor.constraint(equalTo: pitchContainer.centerYAnchor)
+        ])
+        
+        let stack = UIStackView(arrangedSubviews: [speedContainer, pitchContainer])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.distribution = .fillEqually
+        stack.spacing = 16
+        return stack
+    }()
+    
     // Media Control Buttons
     private lazy var skipBackButton: UIButton = {
         let button = UIButton(type: .system)
@@ -1268,6 +1359,8 @@ class SimpleNowPlayingViewController: UIViewController {
         
         view.addSubview(titleLabel)
         view.addSubview(timeLabel)
+        view.addSubview(speedPitchContainer)
+        speedPitchContainer.addSubview(speedPitchStackView)
         view.addSubview(progressSlider)
         view.addSubview(controlsStackView)
         view.addSubview(subtitleHeaderLabel)
@@ -1282,7 +1375,17 @@ class SimpleNowPlayingViewController: UIViewController {
             timeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
-            progressSlider.topAnchor.constraint(equalTo: timeLabel.bottomAnchor, constant: 16),
+            speedPitchContainer.topAnchor.constraint(equalTo: timeLabel.bottomAnchor, constant: 12),
+            speedPitchContainer.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            speedPitchContainer.widthAnchor.constraint(equalToConstant: 200),
+            speedPitchContainer.heightAnchor.constraint(equalToConstant: 36),
+            
+            speedPitchStackView.topAnchor.constraint(equalTo: speedPitchContainer.topAnchor, constant: 8),
+            speedPitchStackView.leadingAnchor.constraint(equalTo: speedPitchContainer.leadingAnchor, constant: 16),
+            speedPitchStackView.trailingAnchor.constraint(equalTo: speedPitchContainer.trailingAnchor, constant: -16),
+            speedPitchStackView.bottomAnchor.constraint(equalTo: speedPitchContainer.bottomAnchor, constant: -8),
+            
+            progressSlider.topAnchor.constraint(equalTo: speedPitchContainer.bottomAnchor, constant: 16),
             progressSlider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             progressSlider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
@@ -1330,12 +1433,28 @@ class SimpleNowPlayingViewController: UIViewController {
                 self?.subtitleTextView.text = subtitle ?? "No subtitle available"
             }
             .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$speed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] speed in
+                self?.updateSpeedIndicator(speed)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$pitch
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] pitch in
+                self?.updatePitchIndicator(pitch)
+            }
+            .store(in: &cancellables)
     }
     
     private func updateUI() {
         titleLabel.text = coordinator.audioPlayer.currentFile?.name ?? "No Track"
         updateTime(coordinator.audioPlayer.currentTime)
         updatePlayButton(coordinator.audioPlayer.playerState)
+        updateSpeedIndicator(coordinator.audioPlayer.speed)
+        updatePitchIndicator(coordinator.audioPlayer.pitch)
         subtitleTextView.text = coordinator.audioPlayer.subtitle ?? "No subtitle available"
     }
     
@@ -1360,6 +1479,55 @@ class SimpleNowPlayingViewController: UIViewController {
         
         if coordinator.audioPlayer.duration > 0 {
             progressSlider.value = Float(time / coordinator.audioPlayer.duration)
+        }
+    }
+    
+    private func updateSpeedIndicator(_ speed: Float) {
+        speedIndicatorLabel.text = String(format: "%.2f×", speed)
+        
+        // Show visual feedback for non-default values
+        let isSpeedDefault = abs(speed - 1.0) < 0.01
+        let isPitchDefault = abs(coordinator.audioPlayer.pitch - 1.0) < 0.01
+        let bothDefault = isSpeedDefault && isPitchDefault
+        
+        speedIndicatorLabel.textColor = isSpeedDefault ? .systemBlue : .systemOrange
+        updateContainerAppearance(bothDefault: bothDefault)
+    }
+    
+    private func updatePitchIndicator(_ pitch: Float) {
+        let semitones = (pitch - 1.0) * 12.0
+        let roundedSemitones = round(semitones)
+        
+        if abs(roundedSemitones) < 0.1 {
+            pitchIndicatorLabel.text = "0♭♯"
+        } else if roundedSemitones > 0 {
+            pitchIndicatorLabel.text = "+\(Int(roundedSemitones))♯"
+        } else {
+            pitchIndicatorLabel.text = "\(Int(roundedSemitones))♭"
+        }
+        
+        // Show visual feedback for non-default values
+        let isSpeedDefault = abs(coordinator.audioPlayer.speed - 1.0) < 0.01
+        let isPitchDefault = abs(pitch - 1.0) < 0.01
+        let bothDefault = isSpeedDefault && isPitchDefault
+        
+        pitchIndicatorLabel.textColor = isPitchDefault ? .systemPurple : .systemOrange
+        updateContainerAppearance(bothDefault: bothDefault)
+    }
+    
+    private func updateContainerAppearance(bothDefault: Bool) {
+        UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
+            if bothDefault {
+                // Hide when both are default
+                self.speedPitchContainer.alpha = 0.0
+                self.speedPitchContainer.backgroundColor = .secondarySystemBackground
+                self.speedPitchContainer.layer.borderColor = UIColor.separator.cgColor
+            } else {
+                // Show with highlighted appearance when modified
+                self.speedPitchContainer.alpha = 1.0
+                self.speedPitchContainer.backgroundColor = .systemYellow.withAlphaComponent(0.1)
+                self.speedPitchContainer.layer.borderColor = UIColor.systemYellow.cgColor
+            }
         }
     }
     
