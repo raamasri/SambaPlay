@@ -92,6 +92,34 @@ class LocalFolder: Codable {
     }
 }
 
+// MARK: - Playback Position Memory Model
+struct PlaybackPosition: Codable {
+    let filePath: String
+    let fileName: String
+    let position: TimeInterval
+    let duration: TimeInterval
+    let lastPlayed: Date
+    
+    init(file: MediaFile, position: TimeInterval, duration: TimeInterval) {
+        self.filePath = file.path
+        self.fileName = file.name
+        self.position = position
+        self.duration = duration
+        self.lastPlayed = Date()
+    }
+    
+    // Only remember position if we're not at the very beginning or end
+    var shouldRememberPosition: Bool {
+        return position > 5.0 && position < (duration - 10.0)
+    }
+    
+    // Progress as percentage for UI display
+    var progressPercentage: Double {
+        guard duration > 0 else { return 0 }
+        return (position / duration) * 100
+    }
+}
+
 // MARK: - Recent Source Model
 enum RecentSourceType: String, Codable {
     case server
@@ -154,6 +182,9 @@ class SimpleNetworkService: ObservableObject {
     @Published var isLocalMode: Bool = false
     @Published var recentSources: [RecentSource] = []
     
+    // Playback position memory
+    private var savedPositions: [String: PlaybackPosition] = [:]
+    
     private var demoDirectories: [String: [MediaFile]] = [:]
     
     init() {
@@ -161,6 +192,7 @@ class SimpleNetworkService: ObservableObject {
         loadSavedServers()
         loadSavedFolders()
         loadRecentSources()
+        loadSavedPositions()
     }
     
     private func setupDemoData() {
@@ -298,6 +330,62 @@ class SimpleNetworkService: ObservableObject {
         recentSources = Array(recentSources.prefix(5))
         
         saveRecentSources()
+    }
+    
+    // MARK: - Playback Position Memory
+    private func loadSavedPositions() {
+        guard let data = UserDefaults.standard.data(forKey: "SavedPlaybackPositions") else { return }
+        
+        do {
+            let positions = try PropertyListDecoder().decode([PlaybackPosition].self, from: data)
+            savedPositions = Dictionary(uniqueKeysWithValues: positions.map { ($0.filePath, $0) })
+            
+            // Clean up old positions (older than 30 days)
+            let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+            savedPositions = savedPositions.filter { $0.value.lastPlayed > thirtyDaysAgo }
+            
+        } catch {
+            print("Failed to load saved positions: \(error)")
+            savedPositions = [:]
+        }
+    }
+    
+    private func saveSavedPositions() {
+        let positions = Array(savedPositions.values)
+        do {
+            let data = try PropertyListEncoder().encode(positions)
+            UserDefaults.standard.set(data, forKey: "SavedPlaybackPositions")
+        } catch {
+            print("Failed to save positions: \(error)")
+        }
+    }
+    
+    func savePlaybackPosition(for file: MediaFile, position: TimeInterval, duration: TimeInterval) {
+        let playbackPosition = PlaybackPosition(file: file, position: position, duration: duration)
+        
+        // Only save position if it's worth remembering (not at start/end)
+        if playbackPosition.shouldRememberPosition {
+            savedPositions[file.path] = playbackPosition
+            saveSavedPositions()
+        } else {
+            // Remove saved position if user played to end or restarted from beginning
+            savedPositions.removeValue(forKey: file.path)
+            saveSavedPositions()
+        }
+    }
+    
+    func getSavedPosition(for file: MediaFile) -> PlaybackPosition? {
+        return savedPositions[file.path]
+    }
+    
+    func clearSavedPosition(for file: MediaFile) {
+        savedPositions.removeValue(forKey: file.path)
+        saveSavedPositions()
+    }
+    
+    func clearAllSavedPositions() {
+        savedPositions.removeAll()
+        saveSavedPositions()
     }
     
     func connect(to server: SambaServer) {
@@ -690,6 +778,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     @Published var pitch: Float = 1.0
     @Published var currentFile: MediaFile?
     @Published var subtitle: String?
+    @Published var hasRestoredPosition: Bool = false // Indicates if position was restored from memory
     
     private var audioEngine = AVAudioEngine()
     private var playerNode = AVAudioPlayerNode()
@@ -697,6 +786,11 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     private var variableSpeedNode = AVAudioUnitVarispeed()
     private var displayLink: CADisplayLink?
     private var startTime: Date?
+    private weak var networkService: SimpleNetworkService?
+    
+    func setNetworkService(_ service: SimpleNetworkService) {
+        self.networkService = service
+    }
     
     override init() {
         super.init()
@@ -731,15 +825,29 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         let elapsed = Date().timeIntervalSince(startTime) * Double(speed)
         currentTime = min(elapsed, duration)
         
+        // Periodically save position every 10 seconds during playback
+        if Int(currentTime) % 10 == 0 && Int(currentTime) > 0 {
+            saveCurrentPosition()
+        }
+        
         if currentTime >= duration {
+            // When reaching the end, clear the saved position
+            if let file = currentFile {
+                networkService?.clearSavedPosition(for: file)
+            }
             stop()
         }
     }
     
+    private func saveCurrentPosition() {
+        guard let file = currentFile, let networkService = networkService else { return }
+        networkService.savePlaybackPosition(for: file, position: currentTime, duration: duration)
+    }
+    
     func loadFile(_ file: MediaFile, completion: @escaping (Result<Void, Error>) -> Void) {
         currentFile = file
-        currentTime = 0
         playerState = .stopped
+        hasRestoredPosition = false
         
         // If this is the Sample Song, load the actual bundled audio file
         if file.name == "Sample Song.mp3" {
@@ -752,11 +860,20 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                 let audioFile = try AVAudioFile(forReading: audioURL)
                 duration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
                 
+                // Check for saved position and restore it
+                if let savedPosition = networkService?.getSavedPosition(for: file) {
+                    currentTime = savedPosition.position
+                    hasRestoredPosition = true
+                    print("Restored position for \(file.name): \(savedPosition.position)s")
+                } else {
+                    currentTime = 0
+                }
+                
                 // Load the file into the audio engine
                 playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
                     DispatchQueue.main.async {
                         self?.playerState = .stopped
-                        self?.currentTime = 0
+                        // Don't reset currentTime here since we may have restored a position
                     }
                 }
                 
@@ -767,6 +884,16 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         } else {
             // For other demo files, use simulated duration
             duration = 180 // 3 minutes demo
+            
+            // Check for saved position and restore it
+            if let savedPosition = networkService?.getSavedPosition(for: file) {
+                currentTime = savedPosition.position
+                hasRestoredPosition = true
+                print("Restored position for \(file.name): \(savedPosition.position)s")
+            } else {
+                currentTime = 0
+            }
+            
             completion(.success(()))
         }
     }
@@ -816,15 +943,25 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             playerNode.pause()
         }
         playerState = .paused
+        
+        // Save current position when pausing
+        saveCurrentPosition()
     }
     
     func stop() {
         if let file = currentFile, file.name == "Sample Song.mp3" {
             playerNode.stop()
         }
+        
+        // Save current position before stopping (unless user manually stopped at beginning)
+        if currentTime > 5.0 {
+            saveCurrentPosition()
+        }
+        
         playerState = .stopped
         currentTime = 0
         startTime = nil
+        hasRestoredPosition = false
     }
     
     func seek(to time: TimeInterval) {
@@ -859,7 +996,10 @@ class SambaPlayCoordinator {
     let networkService = SimpleNetworkService()
     let audioPlayer = SimpleAudioPlayer()
     
-    private init() {}
+    private init() {
+        // Connect the audio player with the network service for position memory
+        audioPlayer.setNetworkService(networkService)
+    }
     
     func createMainViewController() -> UIViewController {
         return MainViewController(coordinator: self)
@@ -1573,6 +1713,18 @@ class SimpleNowPlayingViewController: UIViewController {
         return label
     }()
     
+    private lazy var positionRestoredLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textAlignment = .center
+        label.textColor = .systemBlue
+        label.text = "📍 Resumed from saved position"
+        label.alpha = 0.0
+        label.isHidden = true
+        return label
+    }()
+    
     private lazy var timeLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -1768,6 +1920,7 @@ class SimpleNowPlayingViewController: UIViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: settingsButton)
         
         view.addSubview(titleLabel)
+        view.addSubview(positionRestoredLabel)
         view.addSubview(timeLabel)
         view.addSubview(speedPitchContainer)
         speedPitchContainer.addSubview(speedPitchStackView)
@@ -1781,7 +1934,11 @@ class SimpleNowPlayingViewController: UIViewController {
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
-            timeLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            positionRestoredLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            positionRestoredLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            positionRestoredLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            timeLabel.topAnchor.constraint(equalTo: positionRestoredLabel.bottomAnchor, constant: 16),
             timeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
@@ -1857,6 +2014,13 @@ class SimpleNowPlayingViewController: UIViewController {
                 self?.updatePitchIndicator(pitch)
             }
             .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$hasRestoredPosition
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasRestored in
+                self?.showPositionRestoredIndicator(hasRestored)
+            }
+            .store(in: &cancellables)
     }
     
     private func updateUI() {
@@ -1866,6 +2030,28 @@ class SimpleNowPlayingViewController: UIViewController {
         updateSpeedIndicator(coordinator.audioPlayer.speed)
         updatePitchIndicator(coordinator.audioPlayer.pitch)
         subtitleTextView.text = coordinator.audioPlayer.subtitle ?? "No subtitle available"
+        showPositionRestoredIndicator(coordinator.audioPlayer.hasRestoredPosition)
+    }
+    
+    private func showPositionRestoredIndicator(_ hasRestored: Bool) {
+        if hasRestored {
+            positionRestoredLabel.isHidden = false
+            UIView.animate(withDuration: 0.3) {
+                self.positionRestoredLabel.alpha = 1.0
+            }
+            
+            // Hide the indicator after 4 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                UIView.animate(withDuration: 0.3) {
+                    self.positionRestoredLabel.alpha = 0.0
+                } completion: { _ in
+                    self.positionRestoredLabel.isHidden = true
+                }
+            }
+        } else {
+            positionRestoredLabel.isHidden = true
+            positionRestoredLabel.alpha = 0.0
+        }
     }
     
     private func updatePlayButton(_ state: AudioPlayerState) {
