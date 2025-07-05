@@ -10,16 +10,15 @@ import UIKit
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
-    var coordinator: SambaPlayCoordinator?
+
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = (scene as? UIWindowScene) else { return }
         
         window = UIWindow(windowScene: windowScene)
         
-        // Create coordinator and main view controller
-        coordinator = SambaPlayCoordinator()
-        let mainViewController = coordinator!.createMainViewController()
+        // Create main view controller using the coordinator
+        let mainViewController = SambaPlayCoordinator.shared.createMainViewController()
         let navigationController = UINavigationController(rootViewController: mainViewController)
         
         window?.rootViewController = navigationController

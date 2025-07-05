@@ -5,83 +5,26 @@ import MediaPlayer
 import CoreData
 import UniformTypeIdentifiers
 
-// MARK: - Core Data Models
-import CoreData
+// MARK: - Data Models
 
-@objc(SambaServer)
-public class SambaServer: NSManagedObject {
-    @NSManaged public var name: String
-    @NSManaged public var host: String
-    @NSManaged public var port: Int32
-    @NSManaged public var username: String
-    @NSManaged public var password: String
-    @NSManaged public var createdDate: Date
-}
-
-@objc(FavoriteDirectory)
-public class FavoriteDirectory: NSManagedObject {
-    @NSManaged public var path: String
-    @NSManaged public var serverName: String
-    @NSManaged public var displayName: String
-    @NSManaged public var createdDate: Date
-}
-
-@objc(PlaybackPosition)
-public class PlaybackPosition: NSManagedObject {
-    @NSManaged public var fileIdentifier: String  // Unique identifier for the file
-    @NSManaged public var fileName: String        // File name for display
-    @NSManaged public var filePath: String        // Full path to file
-    @NSManaged public var serverName: String      // Server name (or "Local" for local files)
-    @NSManaged public var position: Double        // Playback position in seconds
-    @NSManaged public var duration: Double        // Total file duration
-    @NSManaged public var lastPlayed: Date        // When this position was last saved
-    @NSManaged public var speed: Float           // Last used speed
-    @NSManaged public var pitch: Float           // Last used pitch
-}
-
-@objc(FolderHistory)
-public class FolderHistory: NSManagedObject {
-    @NSManaged public var folderPath: String     // Local folder path
-    @NSManaged public var displayName: String   // User-friendly name
-    @NSManaged public var lastAccessed: Date    // When folder was last accessed
-    @NSManaged public var accessCount: Int32    // How many times accessed
-    @NSManaged public var bookmarkData: Data?   // Security-scoped bookmark data
-}
-
-// MARK: - Media File Model
-struct MediaFile: Identifiable {
+struct MediaFile: Identifiable, Hashable {
     let id = UUID()
     let name: String
     let path: String
     let size: Int64
     let modificationDate: Date
     let isDirectory: Bool
-    let fileExtension: String
-    
-    var identifier: String {
-        return "\(path)_\(size)_\(modificationDate.timeIntervalSince1970)"
-    }
+    let fileExtension: String?
     
     var isAudioFile: Bool {
-        let audioExtensions = ["mp3", "m4a", "wav", "aiff", "flac", "aac", "ogg", "wma"]
-        return audioExtensions.contains(fileExtension.lowercased())
+        guard let ext = fileExtension?.lowercased() else { return false }
+        return ["mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff", "opus"].contains(ext)
     }
     
-    var isTextFile: Bool {
-        let textExtensions = ["txt", "srt", "vtt", "ass", "ssa"]
-        return textExtensions.contains(fileExtension.lowercased())
-    }
-    
-    var hasAssociatedTextFile: Bool {
-        // Check if there's a corresponding .txt file
-        return isAudioFile && !name.hasSuffix(".txt")
-    }
-    
-    var associatedTextFileName: String {
-        // Return the corresponding .txt file name
-        let nameWithoutExtension = (name as NSString).deletingPathExtension
-        let pathWithoutFile = (path as NSString).deletingLastPathComponent
-        return "\(pathWithoutFile)/\(nameWithoutExtension).txt"
+    var associatedTextFile: String? {
+        guard let ext = fileExtension else { return nil }
+        let baseName = name.replacingOccurrences(of: ".\(ext)", with: "")
+        return "\(baseName).txt"
     }
 }
 
@@ -100,6 +43,24 @@ enum AudioPlayerState: Equatable {
     case error(String)
 }
 
+// MARK: - Samba Server Model
+class SambaServer {
+    let id = UUID()
+    var name: String
+    var host: String
+    var port: Int16
+    var username: String?
+    var password: String?
+    
+    init(name: String, host: String, port: Int16 = 445, username: String? = nil, password: String? = nil) {
+        self.name = name
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+    }
+}
+
 // MARK: - Enhanced Network Service
 class SimpleNetworkService: ObservableObject {
     @Published var connectionState: NetworkConnectionState = .disconnected
@@ -112,11 +73,6 @@ class SimpleNetworkService: ObservableObject {
     
     private var demoDirectories: [String: [MediaFile]] = [:]
     
-    // Core Data context for server management
-    var context: NSManagedObjectContext {
-        return CoreDataStack().context
-    }
-    
     init() {
         setupDemoData()
         loadSavedServers()
@@ -125,17 +81,17 @@ class SimpleNetworkService: ObservableObject {
     private func setupDemoData() {
         // Root directory
         demoDirectories["/"] = [
-            MediaFile(name: "Music", path: "/Music", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: ""),
-            MediaFile(name: "Podcasts", path: "/Podcasts", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: ""),
-            MediaFile(name: "Documents", path: "/Documents", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: ""),
-            MediaFile(name: "Sample Song.mp3", path: "/Sample Song.mp3", size: 3932160, modificationDate: Date(), isDirectory: false, fileExtension: "mp3"),
+            MediaFile(name: "Music", path: "/Music", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: nil),
+            MediaFile(name: "Podcasts", path: "/Podcasts", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: nil),
+            MediaFile(name: "Documents", path: "/Documents", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: nil),
+            MediaFile(name: "Sample Song.mp3", path: "/Sample Song.mp3", size: 3932160, modificationDate: Date(), isDirectory: false, fileExtension: "mp3"), // Updated to actual file size
             MediaFile(name: "Sample Song.txt", path: "/Sample Song.txt", size: 1024, modificationDate: Date(), isDirectory: false, fileExtension: "txt")
         ]
         
         // Music directory
         demoDirectories["/Music"] = [
-            MediaFile(name: "Rock", path: "/Music/Rock", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: ""),
-            MediaFile(name: "Jazz", path: "/Music/Jazz", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: ""),
+            MediaFile(name: "Rock", path: "/Music/Rock", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: nil),
+            MediaFile(name: "Jazz", path: "/Music/Jazz", size: 0, modificationDate: Date(), isDirectory: true, fileExtension: nil),
             MediaFile(name: "Favorite Song.mp3", path: "/Music/Favorite Song.mp3", size: 4567890, modificationDate: Date(), isDirectory: false, fileExtension: "mp3"),
             MediaFile(name: "Favorite Song.txt", path: "/Music/Favorite Song.txt", size: 892, modificationDate: Date(), isDirectory: false, fileExtension: "txt")
         ]
@@ -160,25 +116,20 @@ class SimpleNetworkService: ObservableObject {
     }
     
     private func loadSavedServers() {
-        // For demo purposes, create a simple server list with a built-in demo server
-        let server = SambaServer(context: context)
-        server.name = "Demo Server"
-        server.host = "demo.local"
-        server.port = 445
-        server.username = ""
-        server.password = ""
-        server.createdDate = Date()
-        savedServers = [server]
+        // In a real app, this would load from UserDefaults or Core Data
+        // For demo, add a sample server
+        let demoServer = SambaServer(name: "Demo Server", host: "192.168.1.100")
+        savedServers = [demoServer]
     }
     
-    func addServer(name: String, host: String, port: Int32 = 445, username: String = "", password: String = "") {
-        // This would normally save to Core Data
-        print("Added server: \(name) at \(host):\(port)")
+    func addServer(_ server: SambaServer) {
+        savedServers.append(server)
+        // In a real app, save to UserDefaults or Core Data
     }
     
     func removeServer(_ server: SambaServer) {
-        // This would normally remove from Core Data
-        print("Removed server: \(server.name)")
+        savedServers.removeAll { $0.id == server.id }
+        // In a real app, remove from UserDefaults or Core Data
     }
     
     func connect(to server: SambaServer) {
@@ -219,10 +170,6 @@ class SimpleNetworkService: ObservableObject {
         } else {
             currentFiles = []
         }
-    }
-    
-    func navigateToDirectory(_ path: String) {
-        navigateToPath(path)
     }
     
     func navigateBack() {
@@ -296,43 +243,6 @@ class SimpleNetworkService: ObservableObject {
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             completion(.success(text))
-        }
-    }
-    
-    func loadTextFile(_ file: MediaFile, completion: @escaping (Result<String, Error>) -> Void) {
-        // Simulate network delay for demo
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-            // For demo purposes, generate sample text content
-            let sampleContent = """
-            📄 Text File: \(file.name)
-            
-            This is a sample text file content for demonstration purposes.
-            
-            In a real implementation, this would load the actual text content from:
-            • Samba network shares
-            • Local file system
-            • Cloud storage services
-            
-            File Details:
-            • Name: \(file.name)
-            • Path: \(file.path)
-            • Size: \(file.size) bytes
-            • Modified: \(DateFormatter.localizedString(from: file.modificationDate, dateStyle: .medium, timeStyle: .short))
-            
-            This text viewer supports:
-            ✓ Font size adjustment
-            ✓ Text sharing
-            ✓ Non-intrusive viewing (doesn't interrupt audio playback)
-            ✓ Full-screen reading experience
-            
-            Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-            
-            Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-            
-            Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.
-            """
-            
-            completion(.success(sampleContent))
         }
     }
 }
@@ -509,167 +419,75 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
 }
 
 // MARK: - Main App Coordinator
-class SambaPlayCoordinator: ObservableObject {
-    let networkService: SimpleNetworkService
-    let audioPlayer: AudioPlayerService
-    private let coreDataStack: CoreDataStack
-    private let playbackPositionManager: PlaybackPositionManager
-    private let folderHistoryManager: FolderHistoryManager
+class SambaPlayCoordinator {
+    static let shared = SambaPlayCoordinator()
     
-    init() {
-        self.coreDataStack = CoreDataStack()
-        self.networkService = SimpleNetworkService()
-        self.audioPlayer = AudioPlayerService()
-        self.playbackPositionManager = PlaybackPositionManager(context: coreDataStack.context)
-        self.folderHistoryManager = FolderHistoryManager(context: coreDataStack.context)
-        
-        // Set up audio player with position manager
-        audioPlayer.setPositionManager(playbackPositionManager)
-    }
+    let networkService = SimpleNetworkService()
+    let audioPlayer = SimpleAudioPlayer()
     
-    func handleFileSelection(_ file: MediaFile, from viewController: UIViewController) {
-        if file.isDirectory {
-            // Navigate into directory
-            networkService.navigateToDirectory(file.path)
-        } else if file.isAudioFile {
-            // Play audio file
-            playAudioFile(file, from: viewController)
-        } else if file.isTextFile {
-            // Show text viewer
-            showTextViewer(for: file, from: viewController)
-        }
-    }
-    
-    private func playAudioFile(_ file: MediaFile, from viewController: UIViewController) {
-        audioPlayer.loadFile(file) { [weak self] result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success:
-                    self?.showNowPlayingScreen(from: viewController)
-                case .failure(let error):
-                    self?.showAlert(title: "Playback Error", message: error.localizedDescription, from: viewController)
-                }
-            }
-        }
-    }
-    
-    private func showTextViewer(for file: MediaFile, from viewController: UIViewController) {
-        let textViewer = TextViewerViewController(file: file, coordinator: self)
-        let navController = UINavigationController(rootViewController: textViewer)
-        viewController.present(navController, animated: true)
-    }
-    
-    private func showNowPlayingScreen(from viewController: UIViewController) {
-        let nowPlayingVC = NowPlayingViewController(coordinator: self)
-        let navController = UINavigationController(rootViewController: nowPlayingVC)
-        viewController.present(navController, animated: true)
-    }
-    
-    func showAudioSettings(from viewController: UIViewController) {
-        let audioSettingsVC = AudioSettingsViewController(coordinator: self)
-        let navController = UINavigationController(rootViewController: audioSettingsVC)
-        viewController.present(navController, animated: true)
-    }
-    
-    func addFolderToHistory(path: String, displayName: String, bookmarkData: Data? = nil) {
-        folderHistoryManager.addFolder(path: path, displayName: displayName, bookmarkData: bookmarkData)
-    }
-    
-    func getFolderHistory() -> [FolderHistory] {
-        return folderHistoryManager.getFolderHistory()
-    }
-    
-    func getRecentFiles() -> [PlaybackPosition] {
-        return playbackPositionManager.getRecentFiles()
-    }
-    
-    private func showAlert(title: String, message: String, from viewController: UIViewController) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        viewController.present(alert, animated: true)
-    }
-    
-    func removeFolderFromHistory(path: String) {
-        folderHistoryManager.removeFolder(path: path)
-    }
-    
-    func showFolderHistory(from viewController: UIViewController) {
-        let folderHistoryVC = FolderHistoryViewController(coordinator: self)
-        let navController = UINavigationController(rootViewController: folderHistoryVC)
-        viewController.present(navController, animated: true)
-    }
+    private init() {}
     
     func createMainViewController() -> UIViewController {
         return MainViewController(coordinator: self)
-    }
-    
-    func showRecentFiles(from viewController: UIViewController) {
-        let alert = UIAlertController(title: "Recent Files", message: "Choose a recent file to resume playback", preferredStyle: .actionSheet)
-        
-        let recentFiles = getRecentFiles()
-        
-        if recentFiles.isEmpty {
-            alert.message = "No recent files found"
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-        } else {
-            for position in recentFiles.prefix(10) {
-                let timeString = formatTime(position.position)
-                let totalTimeString = formatTime(position.duration)
-                let actionTitle = "\(position.fileName)\n\(timeString) / \(totalTimeString)"
-                
-                let action = UIAlertAction(title: actionTitle, style: .default) { [weak self] _ in
-                    self?.resumeRecentFile(position, from: viewController)
-                }
-                alert.addAction(action)
-            }
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        }
-        
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = viewController.view
-            popover.sourceRect = CGRect(x: viewController.view.bounds.midX, y: viewController.view.bounds.midY, width: 0, height: 0)
-        }
-        
-        viewController.present(alert, animated: true)
-    }
-    
-    private func resumeRecentFile(_ position: PlaybackPosition, from viewController: UIViewController) {
-        // Create a MediaFile from the saved position
-        let mediaFile = MediaFile(
-            name: position.fileName,
-            path: position.filePath,
-            size: 0, // Not critical for playback
-            modificationDate: position.lastPlayed,
-            isDirectory: false,
-            fileExtension: URL(fileURLWithPath: position.fileName).pathExtension
-        )
-        
-        audioPlayer.loadFile(mediaFile) { [weak self] result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success:
-                    self?.showNowPlayingScreen(from: viewController)
-                case .failure(let error):
-                    self?.showAlert(title: "Resume Error", message: error.localizedDescription, from: viewController)
-                }
-            }
-        }
-    }
-    
-    private func formatTime(_ time: Double) -> String {
-        let minutes = Int(time) / 60
-        let seconds = Int(time) % 60
-        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
 // MARK: - Main View Controller
 class MainViewController: UIViewController {
     private let coordinator: SambaPlayCoordinator
-    private var tableView: UITableView!
-    private var connectionStateLabel: UILabel!
-    private var connectButton: UIButton!
     private var cancellables = Set<AnyCancellable>()
+    
+    // UI Components
+    private lazy var tableView: UITableView = {
+        let table = UITableView(frame: .zero, style: .insetGrouped)
+        table.translatesAutoresizingMaskIntoConstraints = false
+        table.delegate = self
+        table.dataSource = self
+        table.register(UITableViewCell.self, forCellReuseIdentifier: "FileCell")
+        return table
+    }()
+    
+    private lazy var connectionStatusLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.textAlignment = .center
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .systemBlue
+        return label
+    }()
+    
+    private lazy var pathLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.textAlignment = .center
+        label.font = .systemFont(ofSize: 12, weight: .regular)
+        label.textColor = .secondaryLabel
+        label.numberOfLines = 1
+        return label
+    }()
+    
+    private lazy var backButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle("← Back", for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+        button.addTarget(self, action: #selector(navigateBack), for: .touchUpInside)
+        button.isHidden = true
+        return button
+    }()
+    
+    private lazy var nowPlayingButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle("Now Playing", for: .normal)
+        button.backgroundColor = .systemBlue
+        button.setTitleColor(.white, for: .normal)
+        button.layer.cornerRadius = 8
+        button.addTarget(self, action: #selector(showNowPlaying), for: .touchUpInside)
+        return button
+    }()
+    
+    private var currentFiles: [MediaFile] = []
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -684,193 +502,256 @@ class MainViewController: UIViewController {
         super.viewDidLoad()
         setupUI()
         setupBindings()
+        connectToDemo()
     }
     
     private func setupUI() {
         title = "SambaPlay"
         view.backgroundColor = .systemBackground
         
+        navigationController?.navigationBar.prefersLargeTitles = true
+        
         // Navigation bar buttons
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Servers", style: .plain, target: self, action: #selector(showServerManagement))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Recent", style: .plain, target: self, action: #selector(showRecentFiles))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "server.rack"),
+            style: .plain,
+            target: self,
+            action: #selector(showServers)
+        )
         
-        // Connection state label
-        connectionStateLabel = UILabel()
-        connectionStateLabel.translatesAutoresizingMaskIntoConstraints = false
-        connectionStateLabel.text = "Not Connected"
-        connectionStateLabel.textAlignment = .center
-        connectionStateLabel.font = .systemFont(ofSize: 16, weight: .medium)
-        connectionStateLabel.textColor = .systemGray
-        view.addSubview(connectionStateLabel)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "folder"),
+            style: .plain,
+            target: self,
+            action: #selector(showLocalFiles)
+        )
         
-        // Connect button
-        connectButton = UIButton(type: .system)
-        connectButton.translatesAutoresizingMaskIntoConstraints = false
-        connectButton.setTitle("Connect to Demo Server", for: .normal)
-        connectButton.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
-        connectButton.backgroundColor = .systemBlue
-        connectButton.setTitleColor(.white, for: .normal)
-        connectButton.layer.cornerRadius = 8
-        connectButton.addTarget(self, action: #selector(connectToDemo), for: .touchUpInside)
-        view.addSubview(connectButton)
-        
-        // Table view for files
-        tableView = UITableView(frame: .zero, style: .insetGrouped)
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.delegate = self
-        tableView.dataSource = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "FileCell")
-        tableView.isHidden = true
+        view.addSubview(connectionStatusLabel)
+        view.addSubview(pathLabel)
+        view.addSubview(backButton)
         view.addSubview(tableView)
+        view.addSubview(nowPlayingButton)
         
-        // Layout constraints
         NSLayoutConstraint.activate([
-            connectionStateLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            connectionStateLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            connectionStateLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            connectionStatusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            connectionStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            connectionStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             
-            connectButton.topAnchor.constraint(equalTo: connectionStateLabel.bottomAnchor, constant: 20),
-            connectButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
-            connectButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
-            connectButton.heightAnchor.constraint(equalToConstant: 50),
+            pathLabel.topAnchor.constraint(equalTo: connectionStatusLabel.bottomAnchor, constant: 4),
+            pathLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pathLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            backButton.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 8),
+            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            backButton.heightAnchor.constraint(equalToConstant: 32),
+            
+            tableView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            tableView.bottomAnchor.constraint(equalTo: nowPlayingButton.topAnchor, constant: -8),
+            
+            nowPlayingButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            nowPlayingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            nowPlayingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            nowPlayingButton.heightAnchor.constraint(equalToConstant: 44)
         ])
     }
     
     private func setupBindings() {
-        // Observe connection state changes
         coordinator.networkService.$connectionState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                self?.updateConnectionState(state)
+                self?.updateConnectionStatus(state)
             }
             .store(in: &cancellables)
         
-        // Observe file changes
         coordinator.networkService.$currentFiles
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] files in
+                self?.currentFiles = files
                 self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
+        
+        coordinator.networkService.$currentPath
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] path in
+                self?.pathLabel.text = path.isEmpty ? "No path" : path
+            }
+            .store(in: &cancellables)
+        
+        coordinator.networkService.$pathHistory
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] history in
+                self?.backButton.isHidden = !(self?.coordinator.networkService.canNavigateBack() ?? false)
             }
             .store(in: &cancellables)
     }
     
-    private func updateConnectionState(_ state: NetworkConnectionState) {
+    private func updateConnectionStatus(_ state: NetworkConnectionState) {
         switch state {
         case .disconnected:
-            connectionStateLabel.text = "Not Connected"
-            connectionStateLabel.textColor = .systemGray
-            connectButton.isHidden = false
-            tableView.isHidden = true
-            
+            connectionStatusLabel.text = "Disconnected"
+            connectionStatusLabel.textColor = .systemRed
         case .connecting:
-            connectionStateLabel.text = "Connecting..."
-            connectionStateLabel.textColor = .systemBlue
-            connectButton.isHidden = true
-            tableView.isHidden = true
-            
+            connectionStatusLabel.text = "Connecting..."
+            connectionStatusLabel.textColor = .systemOrange
         case .connected:
-            if let server = coordinator.networkService.currentServer {
-                connectionStateLabel.text = "Connected to \(server.name)"
-            } else if coordinator.networkService.isLocalMode {
-                connectionStateLabel.text = "Local Files"
-            } else {
-                connectionStateLabel.text = "Connected"
-            }
-            connectionStateLabel.textColor = .systemGreen
-            connectButton.isHidden = true
-            tableView.isHidden = false
-            
+            connectionStatusLabel.text = "Connected"
+            connectionStatusLabel.textColor = .systemGreen
         case .error(let message):
-            connectionStateLabel.text = "Error: \(message)"
-            connectionStateLabel.textColor = .systemRed
-            connectButton.isHidden = false
-            tableView.isHidden = true
+            connectionStatusLabel.text = "Error: \(message)"
+            connectionStatusLabel.textColor = .systemRed
         }
     }
     
-    @objc private func connectToDemo() {
-        // Connect to the demo server
-        if let demoServer = coordinator.networkService.savedServers.first(where: { $0.name == "Demo Server" }) {
+    private func connectToDemo() {
+        if let demoServer = coordinator.networkService.savedServers.first {
             coordinator.networkService.connect(to: demoServer)
         }
     }
     
-    @objc private func showServerManagement() {
-        let serverVC = ServerManagementViewController(coordinator: coordinator)
-        let navController = UINavigationController(rootViewController: serverVC)
-        present(navController, animated: true)
+    @objc private func navigateBack() {
+        coordinator.networkService.navigateBack()
     }
     
-    @objc private func showRecentFiles() {
-        coordinator.showRecentFiles(from: self)
+    @objc private func showLocalFiles() {
+        coordinator.networkService.connectToLocalFiles()
+        showDocumentPicker()
+    }
+    
+    @objc private func showServers() {
+        let alert = UIAlertController(title: "Servers", message: "Connect to a Samba server", preferredStyle: .actionSheet)
+        
+        // Add existing servers
+        for server in coordinator.networkService.savedServers {
+            alert.addAction(UIAlertAction(title: server.name, style: .default) { _ in
+                self.coordinator.networkService.connect(to: server)
+            })
+        }
+        
+        alert.addAction(UIAlertAction(title: "Add New Server", style: .default) { _ in
+            self.showAddServerDialog()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Manage Servers", style: .default) { _ in
+            self.showServerManagement()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
+        
+        present(alert, animated: true)
+    }
+    
+    private func showAddServerDialog() {
+        let alert = UIAlertController(title: "Add Samba Server", message: "Enter server details", preferredStyle: .alert)
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Server Name"
+        }
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Host (IP or hostname)"
+        }
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Port (optional, default 445)"
+            textField.keyboardType = .numberPad
+        }
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Username (optional)"
+        }
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Password (optional)"
+            textField.isSecureTextEntry = true
+        }
+        
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { _ in
+            guard let nameField = alert.textFields?[0],
+                  let hostField = alert.textFields?[1],
+                  let name = nameField.text, !name.isEmpty,
+                  let host = hostField.text, !host.isEmpty else {
+                let errorAlert = UIAlertController(title: "Error", message: "Please enter server name and host", preferredStyle: .alert)
+                errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(errorAlert, animated: true)
+                return
+            }
+            
+            let portText = alert.textFields?[2].text ?? ""
+            let port = Int16(portText) ?? 445
+            let username = alert.textFields?[3].text
+            let password = alert.textFields?[4].text
+            
+            let server = SambaServer(
+                name: name,
+                host: host,
+                port: port,
+                username: username?.isEmpty == false ? username : nil,
+                password: password?.isEmpty == false ? password : nil
+            )
+            
+            self.coordinator.networkService.addServer(server)
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
+    }
+    
+    private func showServerManagement() {
+        let serverListVC = ServerManagementViewController(networkService: coordinator.networkService)
+        let nav = UINavigationController(rootViewController: serverListVC)
+        present(nav, animated: true)
+    }
+    
+    private func showDocumentPicker() {
+        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [
+            UTType.audio,
+            UTType.mp3,
+            UTType.mpeg4Audio,
+            UTType.wav,
+            UTType.aiff
+        ])
+        documentPicker.delegate = self
+        documentPicker.allowsMultipleSelection = true
+        present(documentPicker, animated: true)
+    }
+    
+    @objc private func showNowPlaying() {
+        let nowPlayingVC = SimpleNowPlayingViewController(coordinator: coordinator)
+        let nav = UINavigationController(rootViewController: nowPlayingVC)
+        present(nav, animated: true)
     }
 }
 
-// MARK: - Main View Controller Table View
+// MARK: - Table View Data Source & Delegate
 extension MainViewController: UITableViewDataSource, UITableViewDelegate {
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return 2
-    }
-    
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 {
-            // Navigation section
-            return coordinator.networkService.canNavigateBack() ? 1 : 0
-        } else {
-            // Files section
-            return coordinator.networkService.currentFiles.count
-        }
-    }
-    
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        if section == 0 && coordinator.networkService.canNavigateBack() {
-            return "Navigation"
-        } else if section == 1 && !coordinator.networkService.currentFiles.isEmpty {
-            return coordinator.networkService.currentPath.isEmpty ? "Demo Files" : coordinator.networkService.currentPath
-        }
-        return nil
+        return currentFiles.count
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "FileCell", for: indexPath)
+        let file = currentFiles[indexPath.row]
         
-        if indexPath.section == 0 {
-            // Back button
-            cell.textLabel?.text = "← Back"
-            cell.imageView?.image = UIImage(systemName: "arrow.left")
-            cell.imageView?.tintColor = .systemBlue
+        cell.textLabel?.text = file.name
+        cell.detailTextLabel?.text = file.isDirectory ? "Folder" : ByteCountFormatter().string(fromByteCount: file.size)
+        
+        if file.isDirectory {
+            cell.imageView?.image = UIImage(systemName: "folder.fill")
+            cell.accessoryType = .disclosureIndicator
+        } else if file.isAudioFile {
+            cell.imageView?.image = UIImage(systemName: "music.note")
             cell.accessoryType = .none
         } else {
-            // File or directory
-            let file = coordinator.networkService.currentFiles[indexPath.row]
-            cell.textLabel?.text = file.name
-            
-            if file.isDirectory {
-                cell.imageView?.image = UIImage(systemName: "folder.fill")
-                cell.imageView?.tintColor = .systemBlue
-                cell.accessoryType = .disclosureIndicator
-                cell.detailTextLabel?.text = nil
-            } else if file.isAudioFile {
-                cell.imageView?.image = UIImage(systemName: "music.note")
-                cell.imageView?.tintColor = .systemOrange
-                cell.accessoryType = .none
-                cell.detailTextLabel?.text = formatFileSize(file.size)
-            } else if file.isTextFile {
-                cell.imageView?.image = UIImage(systemName: "doc.text")
-                cell.imageView?.tintColor = .systemGreen
-                cell.accessoryType = .none
-                cell.detailTextLabel?.text = formatFileSize(file.size)
-            } else {
-                cell.imageView?.image = UIImage(systemName: "doc")
-                cell.imageView?.tintColor = .systemGray
-                cell.accessoryType = .none
-                cell.detailTextLabel?.text = formatFileSize(file.size)
-            }
+            cell.imageView?.image = UIImage(systemName: "doc.fill")
+            cell.accessoryType = .none
         }
         
         return cell
@@ -879,29 +760,137 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         
-        if indexPath.section == 0 {
-            // Navigate back
-            coordinator.networkService.navigateBack()
-        } else {
-            // Handle file selection
-            let file = coordinator.networkService.currentFiles[indexPath.row]
-            coordinator.handleFileSelection(file, from: self)
+        let file = currentFiles[indexPath.row]
+        
+        if file.isDirectory {
+            coordinator.networkService.navigateToPath(file.path)
+        } else if file.isAudioFile {
+            playFile(file)
         }
     }
     
-    private func formatFileSize(_ size: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
+    private func playFile(_ file: MediaFile) {
+        coordinator.audioPlayer.loadFile(file) { [weak self] result in
+            switch result {
+            case .success:
+                self?.coordinator.audioPlayer.play()
+                
+                // Load subtitle if available
+                if let textFile = file.associatedTextFile {
+                    self?.coordinator.networkService.readTextFile(at: textFile) { textResult in
+                        if case .success(let subtitle) = textResult {
+                            DispatchQueue.main.async {
+                                self?.coordinator.audioPlayer.subtitle = subtitle
+                            }
+                        }
+                    }
+                }
+                
+                self?.showNowPlaying()
+                
+            case .failure(let error):
+                let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self?.present(alert, animated: true)
+            }
+        }
     }
 }
 
-// MARK: - Server Management View Controller
-class ServerManagementViewController: UIViewController {
+// MARK: - Enhanced Now Playing View Controller
+class SimpleNowPlayingViewController: UIViewController {
     private let coordinator: SambaPlayCoordinator
-    private var tableView: UITableView!
-    private var servers: [SambaServer] = []
+    private var cancellables = Set<AnyCancellable>()
+    
+    // UI Components
+    private lazy var titleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 24, weight: .bold)
+        label.textAlignment = .center
+        label.numberOfLines = 2
+        return label
+    }()
+    
+    private lazy var timeLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .monospacedSystemFont(ofSize: 16, weight: .medium)
+        label.textAlignment = .center
+        return label
+    }()
+    
+    private lazy var progressSlider: UISlider = {
+        let slider = UISlider()
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.addTarget(self, action: #selector(progressChanged), for: .valueChanged)
+        return slider
+    }()
+    
+    // Media Control Buttons
+    private lazy var skipBackButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(skipBackTapped), for: .touchUpInside)
+        return button
+    }()
+    
+    private lazy var playPauseButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(playPauseTapped), for: .touchUpInside)
+        return button
+    }()
+    
+    private lazy var skipForwardButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(skipForwardTapped), for: .touchUpInside)
+        return button
+    }()
+    
+    private lazy var controlsStackView: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [skipBackButton, playPauseButton, skipForwardButton])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.distribution = .equalSpacing
+        stack.alignment = .center
+        stack.spacing = 40
+        return stack
+    }()
+    
+    private lazy var settingsButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "slider.horizontal.3", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(showSettings), for: .touchUpInside)
+        return button
+    }()
+    
+    private lazy var subtitleTextView: UITextView = {
+        let textView = UITextView()
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .secondarySystemBackground
+        textView.layer.cornerRadius = 12
+        textView.font = .systemFont(ofSize: 16)
+        textView.isEditable = false
+        textView.contentInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        textView.layer.borderWidth = 1
+        textView.layer.borderColor = UIColor.separator.cgColor
+        return textView
+    }()
+    
+    private lazy var subtitleHeaderLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "🎵 Lyrics"
+        label.font = .systemFont(ofSize: 18, weight: .semibold)
+        label.textColor = .label
+        return label
+    }()
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -915,244 +904,152 @@ class ServerManagementViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        loadServers()
+        setupBindings()
+        updateUI()
     }
     
     private func setupUI() {
-        title = "Servers"
+        title = "Now Playing"
         view.backgroundColor = .systemBackground
         
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissController))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addServer))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissViewController))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: settingsButton)
         
-        tableView = UITableView(frame: .zero, style: .insetGrouped)
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.delegate = self
-        tableView.dataSource = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ServerCell")
-        view.addSubview(tableView)
+        view.addSubview(titleLabel)
+        view.addSubview(timeLabel)
+        view.addSubview(progressSlider)
+        view.addSubview(controlsStackView)
+        view.addSubview(subtitleHeaderLabel)
+        view.addSubview(subtitleTextView)
         
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            titleLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            timeLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            timeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            progressSlider.topAnchor.constraint(equalTo: timeLabel.bottomAnchor, constant: 16),
+            progressSlider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            progressSlider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            controlsStackView.topAnchor.constraint(equalTo: progressSlider.bottomAnchor, constant: 32),
+            controlsStackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            controlsStackView.widthAnchor.constraint(equalToConstant: 200),
+            controlsStackView.heightAnchor.constraint(equalToConstant: 60),
+            
+            subtitleHeaderLabel.topAnchor.constraint(equalTo: controlsStackView.bottomAnchor, constant: 32),
+            subtitleHeaderLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            subtitleHeaderLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            subtitleTextView.topAnchor.constraint(equalTo: subtitleHeaderLabel.bottomAnchor, constant: 12),
+            subtitleTextView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            subtitleTextView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            subtitleTextView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20)
         ])
     }
     
-    private func loadServers() {
-        servers = coordinator.networkService.savedServers
-        tableView.reloadData()
+    private func setupBindings() {
+        coordinator.audioPlayer.$playerState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.updatePlayButton(state)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$currentTime
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] time in
+                self?.updateTime(time)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$currentFile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] file in
+                self?.titleLabel.text = file?.name ?? "No Track"
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$subtitle
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] subtitle in
+                self?.subtitleTextView.text = subtitle ?? "No subtitle available"
+            }
+            .store(in: &cancellables)
     }
     
-    @objc private func dismissController() {
+    private func updateUI() {
+        titleLabel.text = coordinator.audioPlayer.currentFile?.name ?? "No Track"
+        updateTime(coordinator.audioPlayer.currentTime)
+        updatePlayButton(coordinator.audioPlayer.playerState)
+        subtitleTextView.text = coordinator.audioPlayer.subtitle ?? "No subtitle available"
+    }
+    
+    private func updatePlayButton(_ state: AudioPlayerState) {
+        switch state {
+        case .playing:
+            playPauseButton.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+        case .paused, .stopped:
+            playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+        default:
+            playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+        }
+    }
+    
+    private func updateTime(_ time: TimeInterval) {
+        let currentMinutes = Int(time) / 60
+        let currentSeconds = Int(time) % 60
+        let totalMinutes = Int(coordinator.audioPlayer.duration) / 60
+        let totalSeconds = Int(coordinator.audioPlayer.duration) % 60
+        
+        timeLabel.text = String(format: "%d:%02d / %d:%02d", currentMinutes, currentSeconds, totalMinutes, totalSeconds)
+        
+        if coordinator.audioPlayer.duration > 0 {
+            progressSlider.value = Float(time / coordinator.audioPlayer.duration)
+        }
+    }
+    
+    @objc private func dismissViewController() {
         dismiss(animated: true)
     }
     
-    @objc private func addServer() {
-        let alert = UIAlertController(title: "Add Server", message: "Enter server details", preferredStyle: .alert)
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Server Name"
-        }
-        alert.addTextField { textField in
-            textField.placeholder = "Host/IP Address"
-        }
-        alert.addTextField { textField in
-            textField.placeholder = "Port (default: 445)"
-            textField.keyboardType = .numberPad
-        }
-        alert.addTextField { textField in
-            textField.placeholder = "Username (optional)"
-        }
-        alert.addTextField { textField in
-            textField.placeholder = "Password (optional)"
-            textField.isSecureTextEntry = true
-        }
-        
-        alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self] _ in
-            guard let textFields = alert.textFields,
-                  let name = textFields[0].text, !name.isEmpty,
-                  let host = textFields[1].text, !host.isEmpty else {
-                return
-            }
-            
-            let portText = textFields[2].text ?? ""
-            let port = Int32(portText) ?? 445
-            let username = textFields[3].text ?? ""
-            let password = textFields[4].text ?? ""
-            
-            self?.coordinator.networkService.addServer(name: name, host: host, port: port, username: username, password: password)
-            self?.loadServers()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        present(alert, animated: true)
-    }
-}
-
-// MARK: - Server Management Table View
-extension ServerManagementViewController: UITableViewDataSource, UITableViewDelegate {
-    func numberOfSections(in tableView: UITableView) -> Int {
-        return 2
-    }
-    
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 {
-            return servers.count
-        } else {
-            return 2 // Local Files + Folder History
+    @objc private func playPauseTapped() {
+        switch coordinator.audioPlayer.playerState {
+        case .playing:
+            coordinator.audioPlayer.pause()
+        case .paused, .stopped:
+            coordinator.audioPlayer.play()
+        default:
+            break
         }
     }
     
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return section == 0 ? "Network Servers" : "Local Access"
+    @objc private func progressChanged() {
+        let newTime = Double(progressSlider.value) * coordinator.audioPlayer.duration
+        coordinator.audioPlayer.seek(to: newTime)
     }
     
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "ServerCell", for: indexPath)
-        
-        if indexPath.section == 0 {
-            let server = servers[indexPath.row]
-            cell.textLabel?.text = server.name
-            cell.detailTextLabel?.text = "\(server.host):\(server.port)"
-            cell.imageView?.image = UIImage(systemName: server.name == "Demo Server" ? "tv" : "server.rack")
-            cell.imageView?.tintColor = server.name == "Demo Server" ? .systemOrange : .systemBlue
-            cell.accessoryType = .disclosureIndicator
-        } else {
-            if indexPath.row == 0 {
-                cell.textLabel?.text = "Local Files"
-                cell.detailTextLabel?.text = "Import from Files app"
-                cell.imageView?.image = UIImage(systemName: "folder")
-                cell.imageView?.tintColor = .systemGreen
-                cell.accessoryType = .disclosureIndicator
-            } else {
-                cell.textLabel?.text = "Folder History"
-                cell.detailTextLabel?.text = "Previously imported folders"
-                cell.imageView?.image = UIImage(systemName: "clock.arrow.circlepath")
-                cell.imageView?.tintColor = .systemPurple
-                cell.accessoryType = .disclosureIndicator
-            }
-        }
-        
-        return cell
+    @objc private func skipBackTapped() {
+        let currentTime = coordinator.audioPlayer.currentTime
+        let newTime = max(0, currentTime - 15.0)
+        coordinator.audioPlayer.seek(to: newTime)
     }
     
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        
-        if indexPath.section == 0 {
-            let server = servers[indexPath.row]
-            coordinator.networkService.connect(to: server)
-            dismiss(animated: true)
-        } else {
-            if indexPath.row == 0 {
-                // Local Files
-                coordinator.networkService.connectToLocalFiles()
-                dismiss(animated: true)
-                
-                // Show document picker
-                let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-                documentPicker.allowsMultipleSelection = false
-                documentPicker.delegate = self
-                
-                if let presentingVC = presentingViewController {
-                    presentingVC.present(documentPicker, animated: true)
-                }
-            } else {
-                // Folder History
-                dismiss(animated: true) { [weak self] in
-                    if let presentingVC = self?.presentingViewController {
-                        self?.coordinator.showFolderHistory(from: presentingVC)
-                    }
-                }
-            }
-        }
+    @objc private func skipForwardTapped() {
+        let currentTime = coordinator.audioPlayer.currentTime
+        let duration = coordinator.audioPlayer.duration
+        let newTime = min(duration, currentTime + 30.0)
+        coordinator.audioPlayer.seek(to: newTime)
     }
     
-    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        if editingStyle == .delete && indexPath.section == 0 {
-            let server = servers[indexPath.row]
-            if server.name != "Demo Server" { // Don't allow deleting demo server
-                coordinator.networkService.removeServer(server)
-                servers.remove(at: indexPath.row)
-                tableView.deleteRows(at: [indexPath], with: .fade)
-            }
-        }
-    }
-    
-    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        if indexPath.section == 0 {
-            let server = servers[indexPath.row]
-            return server.name != "Demo Server" // Don't allow editing demo server
-        }
-        return false
-    }
-}
-
-// MARK: - Document Picker Delegate
-extension ServerManagementViewController: UIDocumentPickerDelegate {
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
-        
-        // Create security-scoped bookmark
-        do {
-            let bookmarkData = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
-            
-            // Add to folder history
-            let displayName = url.lastPathComponent
-            coordinator.addFolderToHistory(path: url.path, displayName: displayName, bookmarkData: bookmarkData)
-            
-            // Start accessing the folder
-            guard url.startAccessingSecurityScopedResource() else {
-                print("Failed to access security scoped resource")
-                return
-            }
-            
-            defer { url.stopAccessingSecurityScopedResource() }
-            
-            // Load files from the folder
-            loadFilesFromLocalFolder(url: url)
-            
-        } catch {
-            print("Failed to create bookmark: \(error)")
-        }
-    }
-    
-    private func loadFilesFromLocalFolder(url: URL) {
-        do {
-            let fileManager = FileManager.default
-            let contents = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-            
-            var mediaFiles: [MediaFile] = []
-            
-            for fileURL in contents {
-                let resourceValues = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-                
-                let isDirectory = resourceValues.isDirectory ?? false
-                let fileSize = resourceValues.fileSize ?? 0
-                let modificationDate = resourceValues.contentModificationDate ?? Date()
-                let fileExtension = fileURL.pathExtension.lowercased()
-                
-                let mediaFile = MediaFile(
-                    name: fileURL.lastPathComponent,
-                    path: fileURL.path,
-                    size: Int64(fileSize),
-                    modificationDate: modificationDate,
-                    isDirectory: isDirectory,
-                    fileExtension: fileExtension
-                )
-                
-                mediaFiles.append(mediaFile)
-            }
-            
-            // Update network service with loaded files
-            coordinator.networkService.currentFiles = mediaFiles
-            
-        } catch {
-            print("Failed to load folder contents: \(error)")
-        }
+    @objc private func showSettings() {
+        let settingsVC = AudioSettingsViewController(coordinator: coordinator)
+        let nav = UINavigationController(rootViewController: settingsVC)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
     }
 }
 
@@ -1903,6 +1800,8 @@ class AudioSettingsViewController: UIViewController {
     }
 }
 
+
+
 // MARK: - UIDocumentPickerDelegate Extension
 extension MainViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
@@ -1914,759 +1813,34 @@ extension MainViewController: UIDocumentPickerDelegate {
             
             defer { url.stopAccessingSecurityScopedResource() }
             
-            // Add folder to history (without security-scoped bookmarks for iOS)
-            coordinator.addFolderToHistory(
+            let fileExtension = url.pathExtension.lowercased()
+            let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            
+            let mediaFile = MediaFile(
+                name: url.lastPathComponent,
                 path: url.path,
-                displayName: url.lastPathComponent,
-                bookmarkData: nil
+                size: Int64(fileSize),
+                modificationDate: modificationDate,
+                isDirectory: false,
+                fileExtension: fileExtension
             )
             
-            print("📁 Added folder to history: \(url.lastPathComponent)")
-            
-            // If this is a directory, load its contents
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                // Load directory contents
-                do {
-                    let contents = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-                    
-                    for fileURL in contents {
-                        let resourceValues = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-                        
-                        let isDirectory = resourceValues.isDirectory ?? false
-                        let fileSize = resourceValues.fileSize ?? 0
-                        let modificationDate = resourceValues.contentModificationDate ?? Date()
-                        let fileExtension = fileURL.pathExtension.lowercased()
-                        
-                        let mediaFile = MediaFile(
-                            name: fileURL.lastPathComponent,
-                            path: fileURL.path,
-                            size: Int64(fileSize),
-                            modificationDate: modificationDate,
-                            isDirectory: isDirectory,
-                            fileExtension: fileExtension
-                        )
-                        
-                        localFiles.append(mediaFile)
-                    }
-                } catch {
-                    print("❌ Failed to read directory contents: \(error)")
-                }
-            } else {
-                // Single file
-                let fileExtension = url.pathExtension.lowercased()
-                let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
-                
-                let mediaFile = MediaFile(
-                    name: url.lastPathComponent,
-                    path: url.path,
-                    size: Int64(fileSize),
-                    modificationDate: modificationDate,
-                    isDirectory: false,
-                    fileExtension: fileExtension
-                )
-                
-                localFiles.append(mediaFile)
-            }
+            localFiles.append(mediaFile)
         }
         
         coordinator.networkService.currentFiles = localFiles
-        
-        // Show success message if folders were added to history
-        if !urls.isEmpty {
-            let folderCount = urls.filter { url in
-                var isDirectory: ObjCBool = false
-                return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
-            }.count
-            
-            if folderCount > 0 {
-                let message = folderCount == 1 ? "Folder added to history" : "\(folderCount) folders added to history"
-                showTemporaryMessage(message)
-            }
-        }
     }
     
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         // User cancelled, stay in local mode but show empty list
         coordinator.networkService.currentFiles = []
     }
-    
-    private func showTemporaryMessage(_ message: String) {
-        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-        present(alert, animated: true)
-        
-        // Auto-dismiss after 2 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            alert.dismiss(animated: true)
-        }
-    }
 }
 
-// MARK: - Playback Position Manager
-class PlaybackPositionManager {
-    private let context: NSManagedObjectContext
-    
-    init(context: NSManagedObjectContext) {
-        self.context = context
-    }
-    
-    func savePosition(for file: MediaFile, position: Double, duration: Double, speed: Float, pitch: Float, serverName: String = "Local") {
-        // Find existing position or create new one
-        let request = NSFetchRequest<PlaybackPosition>(entityName: "PlaybackPosition")
-        request.predicate = NSPredicate(format: "fileIdentifier == %@", file.identifier)
-        
-        do {
-            let existingPositions = try context.fetch(request)
-            let playbackPosition = existingPositions.first ?? PlaybackPosition(context: context)
-            
-            playbackPosition.fileIdentifier = file.identifier
-            playbackPosition.fileName = file.name
-            playbackPosition.filePath = file.path
-            playbackPosition.serverName = serverName
-            playbackPosition.position = position
-            playbackPosition.duration = duration
-            playbackPosition.lastPlayed = Date()
-            playbackPosition.speed = speed
-            playbackPosition.pitch = pitch
-            
-            try context.save()
-            print("💾 Saved playback position: \(file.name) at \(position)s")
-        } catch {
-            print("❌ Failed to save playback position: \(error)")
-        }
-    }
-    
-    func getPosition(for file: MediaFile) -> PlaybackPosition? {
-        let request = NSFetchRequest<PlaybackPosition>(entityName: "PlaybackPosition")
-        request.predicate = NSPredicate(format: "fileIdentifier == %@", file.identifier)
-        
-        do {
-            let positions = try context.fetch(request)
-            return positions.first
-        } catch {
-            print("❌ Failed to fetch playback position: \(error)")
-            return nil
-        }
-    }
-    
-    func getRecentFiles(limit: Int = 10) -> [PlaybackPosition] {
-        let request = NSFetchRequest<PlaybackPosition>(entityName: "PlaybackPosition")
-        request.sortDescriptors = [NSSortDescriptor(key: "lastPlayed", ascending: false)]
-        request.fetchLimit = limit
-        
-        do {
-            return try context.fetch(request)
-        } catch {
-            print("❌ Failed to fetch recent files: \(error)")
-            return []
-        }
-    }
-    
-    func clearOldPositions(olderThan days: Int = 30) {
-        let cutoffDate = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
-        let request = NSFetchRequest<PlaybackPosition>(entityName: "PlaybackPosition")
-        request.predicate = NSPredicate(format: "lastPlayed < %@", cutoffDate as NSDate)
-        
-        do {
-            let oldPositions = try context.fetch(request)
-            for position in oldPositions {
-                context.delete(position)
-            }
-            try context.save()
-            print("🗑️ Cleared \(oldPositions.count) old playback positions")
-        } catch {
-            print("❌ Failed to clear old positions: \(error)")
-        }
-    }
-}
-
-// MARK: - Folder History Manager
-class FolderHistoryManager {
-    private let context: NSManagedObjectContext
-    
-    init(context: NSManagedObjectContext) {
-        self.context = context
-    }
-    
-    func addFolder(path: String, displayName: String, bookmarkData: Data? = nil) {
-        // Check if folder already exists
-        let request = NSFetchRequest<FolderHistory>(entityName: "FolderHistory")
-        request.predicate = NSPredicate(format: "folderPath == %@", path)
-        
-        do {
-            let existingFolders = try context.fetch(request)
-            let folder = existingFolders.first ?? FolderHistory(context: context)
-            
-            folder.folderPath = path
-            folder.displayName = displayName
-            folder.lastAccessed = Date()
-            folder.accessCount = (existingFolders.first?.accessCount ?? 0) + 1
-            folder.bookmarkData = bookmarkData
-            
-            try context.save()
-            print("📁 Added/Updated folder history: \(displayName)")
-        } catch {
-            print("❌ Failed to save folder history: \(error)")
-        }
-    }
-    
-    func getFolderHistory() -> [FolderHistory] {
-        let request = NSFetchRequest<FolderHistory>(entityName: "FolderHistory")
-        request.sortDescriptors = [NSSortDescriptor(key: "lastAccessed", ascending: false)]
-        
-        do {
-            return try context.fetch(request)
-        } catch {
-            print("❌ Failed to fetch folder history: \(error)")
-            return []
-        }
-    }
-    
-    func removeFolder(path: String) {
-        let request = NSFetchRequest<FolderHistory>(entityName: "FolderHistory")
-        request.predicate = NSPredicate(format: "folderPath == %@", path)
-        
-        do {
-            let folders = try context.fetch(request)
-            for folder in folders {
-                context.delete(folder)
-            }
-            try context.save()
-            print("🗑️ Removed folder from history: \(path)")
-        } catch {
-            print("❌ Failed to remove folder from history: \(error)")
-        }
-    }
-}
-
-// MARK: - Core Data Stack
-class CoreDataStack {
-    lazy var persistentContainer: NSPersistentContainer = {
-        // Create a simple in-memory Core Data stack for demo purposes
-        let model = NSManagedObjectModel()
-        
-        // Create entities programmatically
-        let serverEntity = NSEntityDescription()
-        serverEntity.name = "SambaServer"
-        serverEntity.managedObjectClassName = NSStringFromClass(SambaServer.self)
-        
-        let serverAttributes = [
-            createAttribute(name: "name", type: .stringAttributeType),
-            createAttribute(name: "host", type: .stringAttributeType),
-            createAttribute(name: "port", type: .integer32AttributeType),
-            createAttribute(name: "username", type: .stringAttributeType),
-            createAttribute(name: "password", type: .stringAttributeType),
-            createAttribute(name: "createdDate", type: .dateAttributeType)
-        ]
-        serverEntity.properties = serverAttributes
-        
-        let positionEntity = NSEntityDescription()
-        positionEntity.name = "PlaybackPosition"
-        positionEntity.managedObjectClassName = NSStringFromClass(PlaybackPosition.self)
-        
-        let positionAttributes = [
-            createAttribute(name: "fileIdentifier", type: .stringAttributeType),
-            createAttribute(name: "fileName", type: .stringAttributeType),
-            createAttribute(name: "filePath", type: .stringAttributeType),
-            createAttribute(name: "serverName", type: .stringAttributeType),
-            createAttribute(name: "position", type: .doubleAttributeType),
-            createAttribute(name: "duration", type: .doubleAttributeType),
-            createAttribute(name: "lastPlayed", type: .dateAttributeType),
-            createAttribute(name: "speed", type: .floatAttributeType),
-            createAttribute(name: "pitch", type: .floatAttributeType)
-        ]
-        positionEntity.properties = positionAttributes
-        
-        let historyEntity = NSEntityDescription()
-        historyEntity.name = "FolderHistory"
-        historyEntity.managedObjectClassName = NSStringFromClass(FolderHistory.self)
-        
-        let historyAttributes = [
-            createAttribute(name: "folderPath", type: .stringAttributeType),
-            createAttribute(name: "displayName", type: .stringAttributeType),
-            createAttribute(name: "lastAccessed", type: .dateAttributeType),
-            createAttribute(name: "accessCount", type: .integer32AttributeType),
-            createOptionalAttribute(name: "bookmarkData", type: .binaryDataAttributeType)
-        ]
-        historyEntity.properties = historyAttributes
-        
-        model.entities = [serverEntity, positionEntity, historyEntity]
-        
-        let container = NSPersistentContainer(name: "SambaPlay", managedObjectModel: model)
-        
-        // Use in-memory store for demo
-        let description = NSPersistentStoreDescription()
-        description.type = NSInMemoryStoreType
-        container.persistentStoreDescriptions = [description]
-        
-        container.loadPersistentStores { _, error in
-            if let error = error {
-                print("Core Data error: \(error)")
-            }
-        }
-        
-        return container
-    }()
-    
-    private func createAttribute(name: String, type: NSAttributeType) -> NSAttributeDescription {
-        let attribute = NSAttributeDescription()
-        attribute.name = name
-        attribute.attributeType = type
-        attribute.isOptional = false
-        return attribute
-    }
-    
-    private func createOptionalAttribute(name: String, type: NSAttributeType) -> NSAttributeDescription {
-        let attribute = NSAttributeDescription()
-        attribute.name = name
-        attribute.attributeType = type
-        attribute.isOptional = true
-        return attribute
-    }
-    
-    var context: NSManagedObjectContext {
-        return persistentContainer.viewContext
-    }
-    
-    func save() {
-        if context.hasChanges {
-            try? context.save()
-        }
-    }
-}
-
-// MARK: - Audio Player Service
-class AudioPlayerService: ObservableObject {
-    @Published var playerState: AudioPlayerState = .stopped
-    @Published var currentFile: MediaFile?
-    @Published var currentTime: Double = 0
-    @Published var duration: Double = 0
-    @Published var speed: Float = 1.0
-    @Published var pitch: Float = 1.0
-    
-    private let audioEngine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private let timePitchNode = AVAudioUnitTimePitch()
-    private let variableSpeedNode = AVAudioUnitVarispeed()
-    
-    private var audioFile: AVAudioFile?
-    private var startTime: Date?
-    private var currentFrame: AVAudioFramePosition = 0
-    private var positionSaveTimer: Timer?
-    private var playbackPositionManager: PlaybackPositionManager?
-    private var currentServerName: String = "Local"
-    
-    init() {
-        setupAudioEngine()
-        setupMediaPlayerInfo()
-    }
-    
-    deinit {
-        positionSaveTimer?.invalidate()
-    }
-    
-    func setPositionManager(_ manager: PlaybackPositionManager) {
-        self.playbackPositionManager = manager
-    }
-    
-    func setCurrentServer(_ serverName: String) {
-        self.currentServerName = serverName
-    }
-    
-    private func setupAudioEngine() {
-        audioEngine.attach(playerNode)
-        audioEngine.attach(timePitchNode)
-        audioEngine.attach(variableSpeedNode)
-        
-        audioEngine.connect(playerNode, to: timePitchNode, format: nil)
-        audioEngine.connect(timePitchNode, to: variableSpeedNode, format: nil)
-        audioEngine.connect(variableSpeedNode, to: audioEngine.mainMixerNode, format: nil)
-        
-        do {
-            try audioEngine.start()
-        } catch {
-            print("Failed to start audio engine: \(error)")
-        }
-    }
-    
-    private func setupMediaPlayerInfo() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        
-        commandCenter.playCommand.addTarget { [weak self] _ in
-            self?.play()
-            return .success
-        }
-        
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
-            self?.pause()
-            return .success
-        }
-        
-        commandCenter.stopCommand.addTarget { [weak self] _ in
-            self?.stop()
-            return .success
-        }
-        
-        commandCenter.skipForwardCommand.addTarget { [weak self] _ in
-            self?.skipForward()
-            return .success
-        }
-        
-        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
-            self?.skipBackward()
-            return .success
-        }
-    }
-    
-    func loadFile(_ file: MediaFile, completion: @escaping (Result<Void, Error>) -> Void) {
-        // Save current position before loading new file
-        saveCurrentPosition()
-        
-        currentFile = file
-        currentTime = 0
-        currentFrame = 0
-        playerState = .stopped
-        
-        // Check for saved position
-        if let savedPosition = playbackPositionManager?.getPosition(for: file) {
-            // Restore saved position and settings
-            currentTime = savedPosition.position
-            currentFrame = AVAudioFramePosition(savedPosition.position * 44100) // Assuming 44.1kHz
-            duration = savedPosition.duration
-            speed = savedPosition.speed
-            pitch = savedPosition.pitch
-            
-            // Apply saved speed and pitch
-            setSpeed(speed)
-            setPitch(pitch)
-            
-            print("📍 Restored position: \(file.name) at \(savedPosition.position)s (speed: \(speed)×, pitch: \(pitch)×)")
-        }
-        
-        // If this is the Sample Song, load the actual bundled audio file
-        if file.name == "Sample Song.mp3" {
-            guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else {
-                completion(.failure(NSError(domain: "AudioPlayer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Sample audio file not found in bundle"])))
-                return
-            }
-            
-            do {
-                let audioFile = try AVAudioFile(forReading: audioURL)
-                self.audioFile = audioFile
-                
-                // Calculate duration
-                let sampleRate = audioFile.processingFormat.sampleRate
-                let lengthInSamples = audioFile.length
-                duration = Double(lengthInSamples) / sampleRate
-                
-                // Start position save timer
-                startPositionSaveTimer()
-                
-                completion(.success(()))
-            } catch {
-                completion(.failure(error))
-            }
-        } else {
-            // For other files, just set up demo mode
-            duration = 180.0 // 3 minutes demo
-            startPositionSaveTimer()
-            completion(.success(()))
-        }
-    }
-    
-    private func startPositionSaveTimer() {
-        positionSaveTimer?.invalidate()
-        positionSaveTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.saveCurrentPosition()
-        }
-    }
-    
-    private func saveCurrentPosition() {
-        guard let file = currentFile,
-              let positionManager = playbackPositionManager,
-              currentTime > 0,
-              duration > 0 else { return }
-        
-        // Only save if we're more than 5 seconds in and not near the end
-        if currentTime > 5.0 && currentTime < (duration - 10.0) {
-            positionManager.savePosition(
-                for: file,
-                position: currentTime,
-                duration: duration,
-                speed: speed,
-                pitch: pitch,
-                serverName: currentServerName
-            )
-        }
-    }
-    
-    func play() {
-        guard let file = currentFile else { return }
-        
-        do {
-            if !audioEngine.isRunning {
-                try audioEngine.start()
-            }
-            
-            if file.name == "Sample Song.mp3" {
-                // For real audio file, use AVAudioPlayerNode
-                if playerState != .paused {
-                    // If not resuming, reload and schedule the file
-                    if let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3"),
-                       let audioFile = try? AVAudioFile(forReading: audioURL) {
-                        self.audioFile = audioFile
-                        
-                        // Schedule from current frame position
-                        playerNode.scheduleSegment(audioFile, startingFrame: currentFrame, frameCount: AVAudioFrameCount(audioFile.length - currentFrame), at: nil)
-                    }
-                }
-                
-                playerNode.play()
-                startTime = Date().addingTimeInterval(-currentTime)
-            } else {
-                // Demo mode
-                if playerState == .paused {
-                    startTime = Date().addingTimeInterval(-currentTime)
-                } else {
-                    startTime = Date().addingTimeInterval(-currentTime)
-                }
-            }
-            
-            playerState = .playing
-            startPositionSaveTimer()
-            
-            // Start time update timer
-            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
-                guard let self = self, self.playerState == .playing else {
-                    timer.invalidate()
-                    return
-                }
-                
-                if let startTime = self.startTime {
-                    let elapsed = Date().timeIntervalSince(startTime) * Double(self.speed)
-                    self.currentTime = min(elapsed, self.duration)
-                    
-                    if file.name == "Sample Song.mp3" {
-                        // Update frame position for real audio
-                        self.currentFrame = AVAudioFramePosition(self.currentTime * 44100)
-                    }
-                    
-                    if self.currentTime >= self.duration {
-                        self.stop()
-                        timer.invalidate()
-                    }
-                }
-            }
-            
-        } catch {
-            print("Failed to play audio: \(error)")
-        }
-    }
-    
-    func pause() {
-        if let file = currentFile, file.name == "Sample Song.mp3" {
-            playerNode.pause()
-        }
-        playerState = .paused
-        positionSaveTimer?.invalidate()
-        saveCurrentPosition() // Save position when pausing
-    }
-    
-    func stop() {
-        if let file = currentFile, file.name == "Sample Song.mp3" {
-            playerNode.stop()
-        }
-        playerState = .stopped
-        positionSaveTimer?.invalidate()
-        saveCurrentPosition() // Save position when stopping
-        currentTime = 0
-        currentFrame = 0
-        startTime = nil
-    }
-    
-    func seek(to time: Double) {
-        let clampedTime = max(0, min(time, duration))
-        currentTime = clampedTime
-        currentFrame = AVAudioFramePosition(clampedTime * 44100)
-        
-        if playerState == .playing {
-            // Restart playback from new position
-            if let file = currentFile, file.name == "Sample Song.mp3" {
-                playerNode.stop()
-                if let audioFile = audioFile {
-                    playerNode.scheduleSegment(audioFile, startingFrame: currentFrame, frameCount: AVAudioFrameCount(audioFile.length - currentFrame), at: nil)
-                    playerNode.play()
-                }
-            }
-            startTime = Date().addingTimeInterval(-currentTime)
-        }
-        
-        saveCurrentPosition() // Save position when seeking
-    }
-    
-    func skipForward() {
-        seek(to: currentTime + 30)
-    }
-    
-    func skipBackward() {
-        seek(to: currentTime - 15)
-    }
-    
-    func setSpeed(_ speed: Float) {
-        self.speed = speed
-        if let file = currentFile, file.name == "Sample Song.mp3" {
-            // For real audio file, update variableSpeedNode
-            variableSpeedNode.rate = speed
-        }
-    }
-    
-    func setPitch(_ pitch: Float) {
-        self.pitch = pitch
-        if let file = currentFile, file.name == "Sample Song.mp3" {
-            // For real audio file, update timePitchNode pitch (in semitones)
-            let semitones = (pitch - 1.0) * 12.0
-            timePitchNode.pitch = semitones * 100.0 // AVAudioUnitTimePitch expects cents (1/100th of semitone)
-        }
-    }
-}
-
-// MARK: - Text Viewer Controller
-class TextViewerViewController: UIViewController {
-    private let file: MediaFile
-    private let coordinator: SambaPlayCoordinator
-    private var textView: UITextView!
-    
-    init(file: MediaFile, coordinator: SambaPlayCoordinator) {
-        self.file = file
-        self.coordinator = coordinator
-        super.init(nibName: nil, bundle: nil)
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        setupUI()
-        loadTextContent()
-    }
-    
-    private func setupUI() {
-        title = file.name
-        view.backgroundColor = .systemBackground
-        
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissViewer))
-        
-        // Create text view
-        textView = UITextView()
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.isEditable = false
-        textView.font = .systemFont(ofSize: 16)
-        textView.backgroundColor = .systemBackground
-        textView.textColor = .label
-        textView.contentInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        
-        view.addSubview(textView)
-        
-        NSLayoutConstraint.activate([
-            textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-        
-        // Add toolbar for text options
-        let toolbar = UIToolbar()
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(toolbar)
-        
-        let fontSizeButton = UIBarButtonItem(title: "Aa", style: .plain, target: self, action: #selector(adjustFontSize))
-        let flexSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        let shareButton = UIBarButtonItem(barButtonSystemItem: .action, target: self, action: #selector(shareText))
-        
-        toolbar.items = [fontSizeButton, flexSpace, shareButton]
-        
-        NSLayoutConstraint.activate([
-            toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            toolbar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            
-            textView.bottomAnchor.constraint(equalTo: toolbar.topAnchor)
-        ])
-    }
-    
-    private func loadTextContent() {
-        // Show loading indicator
-        let loadingView = UIActivityIndicatorView(style: .large)
-        loadingView.translatesAutoresizingMaskIntoConstraints = false
-        loadingView.startAnimating()
-        view.addSubview(loadingView)
-        
-        NSLayoutConstraint.activate([
-            loadingView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            loadingView.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-        ])
-        
-        // Load text content
-        coordinator.networkService.loadTextFile(file) { [weak self] result in
-            DispatchQueue.main.async {
-                loadingView.removeFromSuperview()
-                
-                switch result {
-                case .success(let content):
-                    self?.textView.text = content
-                case .failure(let error):
-                    self?.textView.text = "Failed to load text file: \(error.localizedDescription)"
-                    self?.textView.textColor = .systemRed
-                }
-            }
-        }
-    }
-    
-    @objc private func dismissViewer() {
-        dismiss(animated: true)
-    }
-    
-    @objc private func adjustFontSize() {
-        let alert = UIAlertController(title: "Font Size", message: "Choose font size", preferredStyle: .actionSheet)
-        
-        let sizes: [CGFloat] = [12, 14, 16, 18, 20, 24]
-        for size in sizes {
-            let action = UIAlertAction(title: "\(Int(size))pt", style: .default) { [weak self] _ in
-                self?.textView.font = .systemFont(ofSize: size)
-            }
-            if size == textView.font?.pointSize {
-                action.setValue(true, forKey: "checked")
-            }
-            alert.addAction(action)
-        }
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        if let popover = alert.popoverPresentationController {
-            popover.barButtonItem = navigationItem.rightBarButtonItem
-        }
-        
-        present(alert, animated: true)
-    }
-    
-    @objc private func shareText() {
-        let activityVC = UIActivityViewController(activityItems: [textView.text ?? ""], applicationActivities: nil)
-        
-        if let popover = activityVC.popoverPresentationController {
-            popover.barButtonItem = navigationItem.rightBarButtonItem
-        }
-        
-        present(activityVC, animated: true)
-    }
-}
-
-// MARK: - Folder History View Controller
-class FolderHistoryViewController: UIViewController {
-    private let coordinator: SambaPlayCoordinator
-    private var folderHistory: [FolderHistory] = []
+// MARK: - Server Management View Controller
+class ServerManagementViewController: UIViewController {
+    private let networkService: SimpleNetworkService
     private var cancellables = Set<AnyCancellable>()
     
     private lazy var tableView: UITableView = {
@@ -2674,58 +1848,12 @@ class FolderHistoryViewController: UIViewController {
         table.translatesAutoresizingMaskIntoConstraints = false
         table.delegate = self
         table.dataSource = self
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "FolderCell")
+        table.register(UITableViewCell.self, forCellReuseIdentifier: "ServerCell")
         return table
     }()
     
-    private lazy var emptyStateView: UIView = {
-        let view = UIView()
-        view.translatesAutoresizingMaskIntoConstraints = false
-        
-        let imageView = UIImageView(image: UIImage(systemName: "folder.badge.questionmark"))
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        imageView.tintColor = .systemGray3
-        imageView.contentMode = .scaleAspectFit
-        
-        let titleLabel = UILabel()
-        titleLabel.text = "No Folder History"
-        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-        titleLabel.textColor = .systemGray2
-        titleLabel.textAlignment = .center
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        
-        let messageLabel = UILabel()
-        messageLabel.text = "Import folders from the Files app to see them here"
-        messageLabel.font = .systemFont(ofSize: 16)
-        messageLabel.textColor = .systemGray3
-        messageLabel.textAlignment = .center
-        messageLabel.numberOfLines = 0
-        messageLabel.translatesAutoresizingMaskIntoConstraints = false
-        
-        view.addSubview(imageView)
-        view.addSubview(titleLabel)
-        view.addSubview(messageLabel)
-        
-        NSLayoutConstraint.activate([
-            imageView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            imageView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -40),
-            imageView.widthAnchor.constraint(equalToConstant: 80),
-            imageView.heightAnchor.constraint(equalToConstant: 80),
-            
-            titleLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 16),
-            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            
-            messageLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
-            messageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            messageLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
-        ])
-        
-        return view
-    }()
-    
-    init(coordinator: SambaPlayCoordinator) {
-        self.coordinator = coordinator
+    init(networkService: SimpleNetworkService) {
+        self.networkService = networkService
         super.init(nibName: nil, bundle: nil)
     }
     
@@ -2736,16 +1864,11 @@ class FolderHistoryViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        loadFolderHistory()
-    }
-    
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        loadFolderHistory() // Refresh when view appears
+        setupBindings()
     }
     
     private func setupUI() {
-        title = "Folder History"
+        title = "Manage Servers"
         view.backgroundColor = .systemBackground
         
         navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -2755,260 +1878,129 @@ class FolderHistoryViewController: UIViewController {
         )
         
         navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Clear All",
-            style: .plain,
+            barButtonSystemItem: .add,
             target: self,
-            action: #selector(clearAllHistory)
+            action: #selector(addServer)
         )
         
         view.addSubview(tableView)
-        view.addSubview(emptyStateView)
         
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            
-            emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            emptyStateView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            emptyStateView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
     
-    private func loadFolderHistory() {
-        folderHistory = coordinator.getFolderHistory()
-        updateUI()
-    }
-    
-    private func updateUI() {
-        tableView.reloadData()
-        
-        if folderHistory.isEmpty {
-            tableView.isHidden = true
-            emptyStateView.isHidden = false
-            navigationItem.rightBarButtonItem?.isEnabled = false
-        } else {
-            tableView.isHidden = false
-            emptyStateView.isHidden = true
-            navigationItem.rightBarButtonItem?.isEnabled = true
-        }
+    private func setupBindings() {
+        networkService.$savedServers
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
     }
     
     @objc private func dismissController() {
         dismiss(animated: true)
     }
     
-    @objc private func clearAllHistory() {
-        let alert = UIAlertController(
-            title: "Clear All History",
-            message: "This will remove all folder history. This action cannot be undone.",
-            preferredStyle: .alert
-        )
+    @objc private func addServer() {
+        showAddServerDialog()
+    }
+    
+    private func showAddServerDialog() {
+        let alert = UIAlertController(title: "Add Samba Server", message: "Enter server details", preferredStyle: .alert)
         
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Clear All", style: .destructive) { [weak self] _ in
-            self?.performClearAll()
-        })
+        alert.addTextField { textField in
+            textField.placeholder = "Server Name"
+        }
         
-        present(alert, animated: true)
-    }
-    
-    private func performClearAll() {
-        for folder in folderHistory {
-            coordinator.removeFolderFromHistory(path: folder.folderPath)
+        alert.addTextField { textField in
+            textField.placeholder = "Host (IP or hostname)"
         }
-        loadFolderHistory()
-    }
-    
-    private func accessFolder(_ folder: FolderHistory) {
-        // Try to access the folder using security-scoped bookmark
-        if let bookmarkData = folder.bookmarkData {
-            do {
-                var isStale = false
-                let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
-                
-                if isStale {
-                    // Bookmark is stale, user needs to re-select
-                    showStaleBookmarkAlert(for: folder)
-                    return
-                }
-                
-                guard url.startAccessingSecurityScopedResource() else {
-                    showAccessErrorAlert(for: folder)
-                    return
-                }
-                
-                defer { url.stopAccessingSecurityScopedResource() }
-                
-                // Load files from the folder
-                loadFilesFromFolder(url: url, folder: folder)
-                
-            } catch {
-                showAccessErrorAlert(for: folder)
-            }
-        } else {
-            // No bookmark data, show error
-            showAccessErrorAlert(for: folder)
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Port (optional, default 445)"
+            textField.keyboardType = .numberPad
         }
-    }
-    
-    private func loadFilesFromFolder(url: URL, folder: FolderHistory) {
-        do {
-            let fileManager = FileManager.default
-            let contents = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-            
-            var mediaFiles: [MediaFile] = []
-            
-            for fileURL in contents {
-                let resourceValues = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-                
-                let isDirectory = resourceValues.isDirectory ?? false
-                let fileSize = resourceValues.fileSize ?? 0
-                let modificationDate = resourceValues.contentModificationDate ?? Date()
-                let fileExtension = fileURL.pathExtension.lowercased()
-                
-                let mediaFile = MediaFile(
-                    name: fileURL.lastPathComponent,
-                    path: fileURL.path,
-                    size: Int64(fileSize),
-                    modificationDate: modificationDate,
-                    isDirectory: isDirectory,
-                    fileExtension: fileExtension
-                )
-                
-                mediaFiles.append(mediaFile)
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Username (optional)"
+        }
+        
+        alert.addTextField { textField in
+            textField.placeholder = "Password (optional)"
+            textField.isSecureTextEntry = true
+        }
+        
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { _ in
+            guard let nameField = alert.textFields?[0],
+                  let hostField = alert.textFields?[1],
+                  let name = nameField.text, !name.isEmpty,
+                  let host = hostField.text, !host.isEmpty else {
+                let errorAlert = UIAlertController(title: "Error", message: "Please enter server name and host", preferredStyle: .alert)
+                errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(errorAlert, animated: true)
+                return
             }
             
-            // Update network service with loaded files
-            coordinator.networkService.currentFiles = mediaFiles
+            let portText = alert.textFields?[2].text ?? ""
+            let port = Int16(portText) ?? 445
+            let username = alert.textFields?[3].text
+            let password = alert.textFields?[4].text
             
-            // Update folder access count
-            coordinator.addFolderToHistory(
-                path: folder.folderPath,
-                displayName: folder.displayName,
-                bookmarkData: folder.bookmarkData
+            let server = SambaServer(
+                name: name,
+                host: host,
+                port: port,
+                username: username?.isEmpty == false ? username : nil,
+                password: password?.isEmpty == false ? password : nil
             )
             
-            // Dismiss and return to main view
-            dismiss(animated: true)
-            
-        } catch {
-            showAccessErrorAlert(for: folder)
-        }
-    }
-    
-    private func showStaleBookmarkAlert(for folder: FolderHistory) {
-        let alert = UIAlertController(
-            title: "Access Expired",
-            message: "Access to \"\(folder.displayName)\" has expired. Please re-import this folder from the Files app.",
-            preferredStyle: .alert
-        )
-        
-        alert.addAction(UIAlertAction(title: "Remove from History", style: .destructive) { [weak self] _ in
-            self?.coordinator.removeFolderFromHistory(path: folder.folderPath)
-            self?.loadFolderHistory()
+            self.networkService.addServer(server)
         })
         
-        alert.addAction(UIAlertAction(title: "Keep", style: .cancel))
-        
-        present(alert, animated: true)
-    }
-    
-    private func showAccessErrorAlert(for folder: FolderHistory) {
-        let alert = UIAlertController(
-            title: "Access Error",
-            message: "Unable to access \"\(folder.displayName)\". The folder may have been moved or deleted.",
-            preferredStyle: .alert
-        )
-        
-        alert.addAction(UIAlertAction(title: "Remove from History", style: .destructive) { [weak self] _ in
-            self?.coordinator.removeFolderFromHistory(path: folder.folderPath)
-            self?.loadFolderHistory()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Keep", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         
         present(alert, animated: true)
     }
 }
 
-// MARK: - Folder History Table View
-extension FolderHistoryViewController: UITableViewDataSource, UITableViewDelegate {
+// MARK: - Server Management Table View
+extension ServerManagementViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return folderHistory.count
+        return networkService.savedServers.count
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "FolderCell", for: indexPath)
-        let folder = folderHistory[indexPath.row]
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ServerCell", for: indexPath)
+        let server = networkService.savedServers[indexPath.row]
         
-        cell.textLabel?.text = folder.displayName
-        cell.detailTextLabel?.text = "Last accessed: \(DateFormatter.localizedString(from: folder.lastAccessed, dateStyle: .medium, timeStyle: .short)) • \(folder.accessCount) times"
-        cell.imageView?.image = UIImage(systemName: "folder.fill")
-        cell.imageView?.tintColor = .systemBlue
-        cell.accessoryType = .disclosureIndicator
+        cell.textLabel?.text = server.name
+        cell.detailTextLabel?.text = "\(server.host):\(server.port)"
+        cell.imageView?.image = UIImage(systemName: "server.rack")
         
         return cell
     }
     
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let folder = folderHistory[indexPath.row]
-        accessFolder(folder)
+        
+        let server = networkService.savedServers[indexPath.row]
+        networkService.connect(to: server)
+        dismiss(animated: true)
     }
     
     func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         if editingStyle == .delete {
-            let folder = folderHistory[indexPath.row]
-            coordinator.removeFolderFromHistory(path: folder.folderPath)
-            folderHistory.remove(at: indexPath.row)
-            tableView.deleteRows(at: [indexPath], with: .fade)
-            updateUI()
+            let server = networkService.savedServers[indexPath.row]
+            networkService.removeServer(server)
         }
     }
     
-    func tableView(_ tableView: UITableView, titleForDeleteConfirmationButtonForRowAt indexPath: IndexPath) -> String? {
-        return "Remove"
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        return true
     }
-}
-
-// MARK: - Now Playing View Controller (Placeholder)
-class NowPlayingViewController: UIViewController {
-    private let coordinator: SambaPlayCoordinator
-    
-    init(coordinator: SambaPlayCoordinator) {
-        self.coordinator = coordinator
-        super.init(nibName: nil, bundle: nil)
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "Now Playing"
-        view.backgroundColor = .systemBackground
-        
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissController))
-        
-        let label = UILabel()
-        label.text = "Now Playing Screen\n(Placeholder)"
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
-        
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-        ])
-    }
-    
-    @objc private func dismissController() {
-        dismiss(animated: true)
-    }
-}
- 
+} 
