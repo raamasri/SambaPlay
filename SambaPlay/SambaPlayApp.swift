@@ -92,6 +92,37 @@ class LocalFolder: Codable {
     }
 }
 
+// MARK: - Recent Source Model
+enum RecentSourceType: String, Codable {
+    case server
+    case folder
+}
+
+struct RecentSource: Identifiable, Codable {
+    let id = UUID()
+    let name: String
+    let type: RecentSourceType
+    let lastAccessed: Date
+    let serverID: UUID? // For server sources
+    let folderID: UUID? // For folder sources
+    
+    init(server: SambaServer) {
+        self.name = server.name
+        self.type = .server
+        self.lastAccessed = Date()
+        self.serverID = server.id
+        self.folderID = nil
+    }
+    
+    init(folder: LocalFolder) {
+        self.name = folder.name
+        self.type = .folder
+        self.lastAccessed = Date()
+        self.serverID = nil
+        self.folderID = folder.id
+    }
+}
+
 // MARK: - Samba Server Model
 class SambaServer {
     let id = UUID()
@@ -121,6 +152,7 @@ class SimpleNetworkService: ObservableObject {
     @Published var currentFolder: LocalFolder?
     @Published var pathHistory: [String] = []
     @Published var isLocalMode: Bool = false
+    @Published var recentSources: [RecentSource] = []
     
     private var demoDirectories: [String: [MediaFile]] = [:]
     
@@ -128,6 +160,7 @@ class SimpleNetworkService: ObservableObject {
         setupDemoData()
         loadSavedServers()
         loadSavedFolders()
+        loadRecentSources()
     }
     
     private func setupDemoData() {
@@ -228,10 +261,53 @@ class SimpleNetworkService: ObservableObject {
         saveFolders()
     }
     
+    private func loadRecentSources() {
+        guard let data = UserDefaults.standard.data(forKey: "RecentSources") else { return }
+        
+        do {
+            recentSources = try PropertyListDecoder().decode([RecentSource].self, from: data)
+            // Sort by last accessed date (most recent first) and limit to 5
+            recentSources = Array(recentSources.sorted { $0.lastAccessed > $1.lastAccessed }.prefix(5))
+        } catch {
+            print("Failed to load recent sources: \(error)")
+            recentSources = []
+        }
+    }
+    
+    private func saveRecentSources() {
+        do {
+            let data = try PropertyListEncoder().encode(recentSources)
+            UserDefaults.standard.set(data, forKey: "RecentSources")
+        } catch {
+            print("Failed to save recent sources: \(error)")
+        }
+    }
+    
+    private func addRecentSource(_ source: RecentSource) {
+        // Remove any existing source with the same ID
+        if source.type == .server, let serverID = source.serverID {
+            recentSources.removeAll { $0.serverID == serverID }
+        } else if source.type == .folder, let folderID = source.folderID {
+            recentSources.removeAll { $0.folderID == folderID }
+        }
+        
+        // Add the new source at the beginning
+        recentSources.insert(source, at: 0)
+        
+        // Keep only the 5 most recent
+        recentSources = Array(recentSources.prefix(5))
+        
+        saveRecentSources()
+    }
+    
     func connect(to server: SambaServer) {
         isLocalMode = false
         currentServer = server
         connectionState = .connecting
+        
+        // Add to recent sources
+        let recentSource = RecentSource(server: server)
+        addRecentSource(recentSource)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             self.connectionState = .connected
@@ -255,6 +331,10 @@ class SimpleNetworkService: ObservableObject {
         currentFolder = folder
         folder.updateLastAccessed()
         saveFolders()
+        
+        // Add to recent sources
+        let recentSource = RecentSource(folder: folder)
+        addRecentSource(recentSource)
         
         connectionState = .connecting
         
@@ -830,6 +910,42 @@ class MainViewController: UIViewController {
         return button
     }()
     
+    private lazy var sourceHistoryContainerView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .secondarySystemBackground
+        view.layer.cornerRadius = 12
+        view.isHidden = true // Initially hidden until we have recent sources
+        return view
+    }()
+    
+    private lazy var sourceHistoryLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "Recent Sources"
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .secondaryLabel
+        return label
+    }()
+    
+    private lazy var sourceHistoryScrollView: UIScrollView = {
+        let scrollView = UIScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        return scrollView
+    }()
+    
+    private lazy var sourceHistoryStackView: UIStackView = {
+        let stackView = UIStackView()
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.axis = .horizontal
+        stackView.spacing = 12
+        stackView.alignment = .fill
+        stackView.distribution = .fillProportionally
+        return stackView
+    }()
+    
     private lazy var nowPlayingButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
@@ -882,9 +998,15 @@ class MainViewController: UIViewController {
         
         view.addSubview(connectionStatusLabel)
         view.addSubview(pathLabel)
+        view.addSubview(sourceHistoryContainerView)
         view.addSubview(backButton)
         view.addSubview(tableView)
         view.addSubview(nowPlayingButton)
+        
+        // Setup source history container
+        sourceHistoryContainerView.addSubview(sourceHistoryLabel)
+        sourceHistoryContainerView.addSubview(sourceHistoryScrollView)
+        sourceHistoryScrollView.addSubview(sourceHistoryStackView)
         
         NSLayoutConstraint.activate([
             connectionStatusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
@@ -895,7 +1017,27 @@ class MainViewController: UIViewController {
             pathLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             pathLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             
-            backButton.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 8),
+            sourceHistoryContainerView.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 12),
+            sourceHistoryContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            sourceHistoryContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            sourceHistoryContainerView.heightAnchor.constraint(equalToConstant: 80),
+            
+            sourceHistoryLabel.topAnchor.constraint(equalTo: sourceHistoryContainerView.topAnchor, constant: 8),
+            sourceHistoryLabel.leadingAnchor.constraint(equalTo: sourceHistoryContainerView.leadingAnchor, constant: 12),
+            sourceHistoryLabel.trailingAnchor.constraint(equalTo: sourceHistoryContainerView.trailingAnchor, constant: -12),
+            
+            sourceHistoryScrollView.topAnchor.constraint(equalTo: sourceHistoryLabel.bottomAnchor, constant: 4),
+            sourceHistoryScrollView.leadingAnchor.constraint(equalTo: sourceHistoryContainerView.leadingAnchor, constant: 12),
+            sourceHistoryScrollView.trailingAnchor.constraint(equalTo: sourceHistoryContainerView.trailingAnchor, constant: -12),
+            sourceHistoryScrollView.bottomAnchor.constraint(equalTo: sourceHistoryContainerView.bottomAnchor, constant: -8),
+            
+            sourceHistoryStackView.topAnchor.constraint(equalTo: sourceHistoryScrollView.topAnchor),
+            sourceHistoryStackView.leadingAnchor.constraint(equalTo: sourceHistoryScrollView.leadingAnchor),
+            sourceHistoryStackView.trailingAnchor.constraint(equalTo: sourceHistoryScrollView.trailingAnchor),
+            sourceHistoryStackView.bottomAnchor.constraint(equalTo: sourceHistoryScrollView.bottomAnchor),
+            sourceHistoryStackView.heightAnchor.constraint(equalTo: sourceHistoryScrollView.heightAnchor),
+            
+            backButton.topAnchor.constraint(equalTo: sourceHistoryContainerView.bottomAnchor, constant: 8),
             backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             backButton.heightAnchor.constraint(equalToConstant: 32),
             
@@ -940,6 +1082,13 @@ class MainViewController: UIViewController {
                 self?.backButton.isHidden = !(self?.coordinator.networkService.canNavigateBack() ?? false)
             }
             .store(in: &cancellables)
+        
+        coordinator.networkService.$recentSources
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] recentSources in
+                self?.updateSourceHistory(recentSources)
+            }
+            .store(in: &cancellables)
     }
     
     private func updateConnectionStatus(_ state: NetworkConnectionState) {
@@ -956,6 +1105,66 @@ class MainViewController: UIViewController {
         case .error(let message):
             connectionStatusLabel.text = "Error: \(message)"
             connectionStatusLabel.textColor = .systemRed
+        }
+    }
+    
+    private func updateSourceHistory(_ recentSources: [RecentSource]) {
+        // Clear existing source buttons
+        sourceHistoryStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        
+        // Show/hide the container based on whether we have recent sources
+        sourceHistoryContainerView.isHidden = recentSources.isEmpty
+        
+        // Add buttons for each recent source
+        for source in recentSources {
+            let button = createSourceHistoryButton(for: source)
+            sourceHistoryStackView.addArrangedSubview(button)
+        }
+    }
+    
+    private func createSourceHistoryButton(for source: RecentSource) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle(source.name, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        button.backgroundColor = .systemBlue.withAlphaComponent(0.1)
+        button.setTitleColor(.systemBlue, for: .normal)
+        button.layer.cornerRadius = 8
+        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        
+        // Set icon based on source type
+        let iconName = source.type == .server ? "server.rack" : "folder.fill"
+        let icon = UIImage(systemName: iconName)
+        button.setImage(icon, for: .normal)
+        button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -4, bottom: 0, right: 4)
+        
+        // Add target for tap
+        button.addTarget(self, action: #selector(sourceHistoryButtonTapped(_:)), for: .touchUpInside)
+        button.tag = sourceHistoryStackView.arrangedSubviews.count
+        
+        // Set width constraint
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        
+        return button
+    }
+    
+    @objc private func sourceHistoryButtonTapped(_ sender: UIButton) {
+        let recentSources = coordinator.networkService.recentSources
+        guard sender.tag < recentSources.count else { return }
+        
+        let source = recentSources[sender.tag]
+        
+        switch source.type {
+        case .server:
+            if let serverID = source.serverID,
+               let server = coordinator.networkService.savedServers.first(where: { $0.id == serverID }) {
+                coordinator.networkService.connect(to: server)
+            }
+        case .folder:
+            if let folderID = source.folderID,
+               let folder = coordinator.networkService.savedFolders.first(where: { $0.id == folderID }) {
+                coordinator.networkService.connectToFolder(folder)
+            }
         }
     }
     
