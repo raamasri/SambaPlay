@@ -21,6 +21,11 @@ struct MediaFile: Identifiable, Hashable {
         return ["mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff", "opus"].contains(ext)
     }
     
+    var isTextFile: Bool {
+        guard let ext = fileExtension?.lowercased() else { return false }
+        return ["txt", "lrc", "srt", "lyrics", "md"].contains(ext)
+    }
+    
     var associatedTextFile: String? {
         guard let ext = fileExtension else { return nil }
         let baseName = name.replacingOccurrences(of: ".\(ext)", with: "")
@@ -99,7 +104,9 @@ class SimpleNetworkService: ObservableObject {
         // Podcasts directory
         demoDirectories["/Podcasts"] = [
             MediaFile(name: "Tech Talk Episode 1.mp3", path: "/Podcasts/Tech Talk Episode 1.mp3", size: 25000000, modificationDate: Date(), isDirectory: false, fileExtension: "mp3"),
-            MediaFile(name: "Music Podcast.m4a", path: "/Podcasts/Music Podcast.m4a", size: 30000000, modificationDate: Date(), isDirectory: false, fileExtension: "m4a")
+            MediaFile(name: "Tech Talk Episode 1.txt", path: "/Podcasts/Tech Talk Episode 1.txt", size: 2048, modificationDate: Date(), isDirectory: false, fileExtension: "txt"),
+            MediaFile(name: "Music Podcast.m4a", path: "/Podcasts/Music Podcast.m4a", size: 30000000, modificationDate: Date(), isDirectory: false, fileExtension: "m4a"),
+            MediaFile(name: "Podcast Notes.txt", path: "/Podcasts/Podcast Notes.txt", size: 1536, modificationDate: Date(), isDirectory: false, fileExtension: "txt")
         ]
         
         // Rock directory
@@ -112,6 +119,13 @@ class SimpleNetworkService: ObservableObject {
         demoDirectories["/Music/Jazz"] = [
             MediaFile(name: "Smooth Jazz.mp3", path: "/Music/Jazz/Smooth Jazz.mp3", size: 7500000, modificationDate: Date(), isDirectory: false, fileExtension: "mp3"),
             MediaFile(name: "Piano Improvisation.flac", path: "/Music/Jazz/Piano Improvisation.flac", size: 45000000, modificationDate: Date(), isDirectory: false, fileExtension: "flac")
+        ]
+        
+        // Documents directory
+        demoDirectories["/Documents"] = [
+            MediaFile(name: "README.txt", path: "/Documents/README.txt", size: 3072, modificationDate: Date(), isDirectory: false, fileExtension: "txt"),
+            MediaFile(name: "Song List.txt", path: "/Documents/Song List.txt", size: 2560, modificationDate: Date(), isDirectory: false, fileExtension: "txt"),
+            MediaFile(name: "Album Notes.md", path: "/Documents/Album Notes.md", size: 4096, modificationDate: Date(), isDirectory: false, fileExtension: "md")
         ]
     }
     
@@ -223,19 +237,197 @@ class SimpleNetworkService: ObservableObject {
             Apps like this help music give
             """,
             
+            "Tech Talk Episode 1.txt": """
+            📻 Tech Talk Episode 1 - Transcript
+            
+            Host: Welcome to Tech Talk, the podcast where we dive deep into the latest technology trends.
+            
+            Today we're discussing audio streaming protocols and how modern apps handle network file systems.
+            
+            Guest: Thanks for having me. SMB/CIFS has been around since the 80s, but it's still incredibly relevant for home and enterprise file sharing.
+            
+            Host: Absolutely. What makes it particularly interesting for media streaming?
+            
+            Guest: Well, unlike HTTP streaming, SMB allows you to browse entire directory structures and access files as if they were local. This is perfect for apps like SambaPlay that need to navigate music libraries.
+            
+            [Conversation continues...]
+            
+            Key Points:
+            - SMB protocol advantages for media streaming
+            - Directory browsing capabilities
+            - Authentication and security considerations
+            - Performance optimizations for audio
+            """,
+            
+            "Podcast Notes.txt": """
+            📝 Podcast Production Notes
+            
+            Episode Planning:
+            
+            1. Research Topics
+               - Audio codec comparisons
+               - Network streaming protocols
+               - Mobile app development
+            
+            2. Guest List
+               - Audio engineers
+               - iOS developers
+               - Network specialists
+            
+            3. Equipment Setup
+               - Professional microphones
+               - Audio interface
+               - Recording software
+               - Backup systems
+            
+            4. Post-Production
+               - Noise reduction
+               - Level adjustment
+               - Export formats
+               - Distribution
+            
+            Recording Tips:
+            - Test audio levels before starting
+            - Record room tone for editing
+            - Use consistent microphone distance
+            - Monitor for background noise
+            """,
+            
+            "README.txt": """
+            📋 SambaPlay Documentation
+            
+            Welcome to SambaPlay - Advanced Audio Streaming for iOS
+            
+            FEATURES:
+            =========
+            ✓ Independent speed control (0.5x - 3.0x)
+            ✓ Independent pitch adjustment (±6 semitones)
+            ✓ Samba/SMB network file browsing
+            ✓ Local file support via document picker
+            ✓ Lyrics and subtitle display
+            ✓ Professional audio processing
+            
+            SETUP:
+            ======
+            1. Connect to your Samba server
+            2. Browse to your audio files
+            3. Tap to play and enjoy advanced controls
+            
+            NETWORK SETUP:
+            ==============
+            - Server: Your NAS or computer IP
+            - Port: Usually 445 (SMB) or 139 (NetBIOS)
+            - Credentials: Username/password if required
+            
+            SUPPORTED FORMATS:
+            ==================
+            Audio: MP3, M4A, WAV, AAC, FLAC, OGG, WMA, AIFF, OPUS
+            Text: TXT, LRC, SRT, LYRICS, MD
+            
+            For more information, visit the project repository.
+            """,
+            
+            "Song List.txt": """
+            🎵 Current Playlist
+            
+            ROCK COLLECTION:
+            ================
+            1. Rock Anthem.mp3 (4:32)
+            2. Guitar Solo.wav (3:45)
+            3. Heavy Metal Thunder.mp3 (5:12)
+            4. Classic Rock Ballad.flac (6:23)
+            
+            JAZZ COLLECTION:
+            ================
+            1. Smooth Jazz.mp3 (4:15)
+            2. Piano Improvisation.flac (7:45)
+            3. Saxophone Dreams.mp3 (5:33)
+            4. Late Night Blues.wav (4:58)
+            
+            PODCAST EPISODES:
+            =================
+            1. Tech Talk Episode 1.mp3 (45:12)
+            2. Music Podcast.m4a (38:45)
+            3. Developer Stories.mp3 (52:33)
+            4. Audio Engineering Tips.m4a (41:18)
+            
+            FAVORITES:
+            ==========
+            ⭐ Sample Song.mp3 (3:42)
+            ⭐ Favorite Song.mp3 (4:18)
+            ⭐ Best of Jazz Collection.flac (Multiple)
+            
+            Total: 47 tracks, 4.2 GB
+            """,
+            
+            "Album Notes.md": """
+            # 🎼 Album Production Notes
+            
+            ## Recording Session Details
+            
+            **Studio:** Abbey Road Studios, London  
+            **Producer:** John Smith  
+            **Engineer:** Sarah Johnson  
+            **Dates:** March 15-25, 2024  
+            
+            ## Track Information
+            
+            ### Track 1: Opening Theme
+            - **Duration:** 3:42
+            - **Key:** C Major
+            - **BPM:** 120
+            - **Instruments:** Piano, Strings, Light Percussion
+            
+            ### Track 2: Melodic Journey
+            - **Duration:** 4:18
+            - **Key:** G Minor
+            - **BPM:** 95
+            - **Instruments:** Guitar, Bass, Drums, Vocals
+            
+            ## Technical Notes
+            
+            - **Sample Rate:** 96kHz/24-bit
+            - **Microphones:** Neumann U87, AKG C414
+            - **Preamps:** Neve 1073, API 512c
+            - **DAW:** Pro Tools 2024
+            
+            ## Post-Production
+            
+            1. **Editing:** Logic Pro X
+            2. **Mixing:** Analog console + plugins
+            3. **Mastering:** Ozone 10 Advanced
+            4. **Final Format:** Multiple (FLAC, MP3, AAC)
+            
+            ## Credits
+            
+            - Lead Vocals: Artist Name
+            - Guitar: Session Musician 1
+            - Bass: Session Musician 2
+            - Drums: Session Musician 3
+            - Strings arranged by: Orchestra Conductor
+            
+            *Special thanks to the entire production team.*
+            """,
+            
             "default": """
-            📝 Subtitle Content
+            📝 Text File Content
             
-            This is a sample subtitle file
-            Accompanying the audio track
-            You can scroll through the lyrics
-            While the music plays back
+            This is a sample text file that can be viewed in SambaPlay's built-in text viewer.
             
-            Features:
-            - Independent speed control
-            - Pitch adjustment
-            - Network file browsing
-            - Local file support
+            Features of the text viewer:
+            - Full-screen reading experience
+            - Adjustable text size
+            - Support for various text formats
+            - Independent of audio playback
+            
+            You can view lyrics, notes, documentation, or any other text content while your music continues playing in the background.
+            
+            The text viewer supports:
+            - Plain text files (.txt)
+            - Markdown files (.md)
+            - Lyrics files (.lrc)
+            - Subtitle files (.srt)
+            - And other text formats
             """
         ]
         
@@ -749,6 +941,9 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
         } else if file.isAudioFile {
             cell.imageView?.image = UIImage(systemName: "music.note")
             cell.accessoryType = .none
+        } else if file.isTextFile {
+            cell.imageView?.image = UIImage(systemName: "doc.text.fill")
+            cell.accessoryType = .disclosureIndicator
         } else {
             cell.imageView?.image = UIImage(systemName: "doc.fill")
             cell.accessoryType = .none
@@ -766,6 +961,8 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
             coordinator.networkService.navigateToPath(file.path)
         } else if file.isAudioFile {
             playFile(file)
+        } else if file.isTextFile {
+            showTextViewer(for: file)
         }
     }
     
@@ -794,6 +991,160 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
                 self?.present(alert, animated: true)
             }
         }
+    }
+    
+    private func showTextViewer(for file: MediaFile) {
+        let textViewerVC = TextViewerViewController(file: file, networkService: coordinator.networkService)
+        let nav = UINavigationController(rootViewController: textViewerVC)
+        present(nav, animated: true)
+    }
+}
+
+// MARK: - Text Viewer View Controller
+class TextViewerViewController: UIViewController {
+    private let file: MediaFile
+    private let networkService: SimpleNetworkService
+    
+    private lazy var textView: UITextView = {
+        let textView = UITextView()
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .systemBackground
+        textView.font = .systemFont(ofSize: 16)
+        textView.isEditable = false
+        textView.contentInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        textView.showsVerticalScrollIndicator = true
+        return textView
+    }()
+    
+    private lazy var loadingLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "Loading..."
+        label.textAlignment = .center
+        label.font = .systemFont(ofSize: 18, weight: .medium)
+        label.textColor = .secondaryLabel
+        return label
+    }()
+    
+    private lazy var errorLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.textAlignment = .center
+        label.font = .systemFont(ofSize: 16)
+        label.textColor = .systemRed
+        label.numberOfLines = 0
+        label.isHidden = true
+        return label
+    }()
+    
+    init(file: MediaFile, networkService: SimpleNetworkService) {
+        self.file = file
+        self.networkService = networkService
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupUI()
+        loadTextContent()
+    }
+    
+    private func setupUI() {
+        title = file.name
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done,
+            target: self,
+            action: #selector(dismissViewer)
+        )
+        
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "textformat.size"),
+            style: .plain,
+            target: self,
+            action: #selector(adjustTextSize)
+        )
+        
+        view.addSubview(textView)
+        view.addSubview(loadingLabel)
+        view.addSubview(errorLabel)
+        
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            
+            loadingLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadingLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            
+            errorLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            errorLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            errorLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            errorLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+        ])
+    }
+    
+    private func loadTextContent() {
+        networkService.readTextFile(at: file.path) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.loadingLabel.isHidden = true
+                
+                switch result {
+                case .success(let content):
+                    self?.textView.text = content
+                    self?.textView.isHidden = false
+                    self?.errorLabel.isHidden = true
+                    
+                case .failure(let error):
+                    self?.textView.isHidden = true
+                    self?.errorLabel.text = "Failed to load text file:\n\(error.localizedDescription)"
+                    self?.errorLabel.isHidden = false
+                }
+            }
+        }
+    }
+    
+    @objc private func dismissViewer() {
+        dismiss(animated: true)
+    }
+    
+    @objc private func adjustTextSize() {
+        let alert = UIAlertController(title: "Text Size", message: "Choose text size", preferredStyle: .actionSheet)
+        
+        let sizes: [(String, CGFloat)] = [
+            ("Small", 14),
+            ("Medium", 16),
+            ("Large", 18),
+            ("Extra Large", 20),
+            ("Huge", 24)
+        ]
+        
+        for (title, size) in sizes {
+            let action = UIAlertAction(title: title, style: .default) { [weak self] _ in
+                self?.textView.font = .systemFont(ofSize: size)
+            }
+            
+            // Mark current size
+            if textView.font?.pointSize == size {
+                action.setValue(true, forKey: "checked")
+            }
+            
+            alert.addAction(action)
+        }
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        if let popover = alert.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
+        
+        present(alert, animated: true)
     }
 }
 
