@@ -1126,33 +1126,60 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             
             if file.name == "Sample Song.mp3" {
                 // For real audio file, use AVAudioPlayerNode
-                if playerState != .paused {
-                    // If not resuming, reload and schedule the file
-                    if let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") {
-                        let audioFile = try AVAudioFile(forReading: audioURL)
-                        playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
-                            DispatchQueue.main.async {
-                                self?.playerState = .stopped
-                                self?.currentTime = 0
-                            }
-                        }
-                    }
-                }
-                playerNode.play()
-            }
-            
-            if playerState == .paused {
-                // Resume from current time
-                startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                playRealAudioFile()
             } else {
-                // Start from beginning
-                startTime = Date()
-                currentTime = 0
+                // For demo files, use timing-based playback
+                if playerState == .paused {
+                    // Resume from current time
+                    startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                } else {
+                    // Start from beginning or current seek position
+                    startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                }
             }
             
             playerState = .playing
         } catch {
             print("Failed to start audio engine: \(error)")
+        }
+    }
+    
+    private func playRealAudioFile() {
+        guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else { return }
+        
+        do {
+            // Always reload the file to ensure proper seeking
+            playerNode.stop()
+            
+            let audioFile = try AVAudioFile(forReading: audioURL)
+            let sampleRate = audioFile.fileFormat.sampleRate
+            let totalFrames = audioFile.length
+            
+            // Calculate the frame position to start from (current time)
+            let startFrame = AVAudioFramePosition(currentTime * sampleRate)
+            let framesToPlay = totalFrames - startFrame
+            
+            if startFrame < totalFrames && framesToPlay > 0 {
+                // Set the file position to the current time
+                audioFile.framePosition = startFrame
+                
+                // Schedule the file from the current position
+                playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                    DispatchQueue.main.async {
+                        if self?.playerState == .playing {
+                            self?.playerState = .stopped
+                        }
+                    }
+                }
+                
+                // Start playback and update timing
+                startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                playerNode.play()
+            }
+        } catch {
+            print("Failed to play real audio file: \(error)")
+            // Fallback to timing-based playback
+            startTime = Date().addingTimeInterval(-currentTime / Double(speed))
         }
     }
     
@@ -1183,9 +1210,67 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     }
     
     func seek(to time: TimeInterval) {
-        currentTime = time
-        if playerState == .playing {
-            startTime = Date().addingTimeInterval(-time / Double(speed))
+        let clampedTime = max(0, min(time, duration))
+        currentTime = clampedTime
+        
+        // Handle real audio file seeking
+        if let file = currentFile, file.name == "Sample Song.mp3" {
+            seekRealAudioFile(to: clampedTime)
+        } else {
+            // For demo files, just update the timing
+            if playerState == .playing {
+                startTime = Date().addingTimeInterval(-clampedTime / Double(speed))
+            }
+        }
+    }
+    
+    private func seekRealAudioFile(to time: TimeInterval) {
+        guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else { return }
+        
+        let wasPlaying = playerState == .playing
+        
+        do {
+            // Stop current playback
+            playerNode.stop()
+            
+            // Create new audio file instance
+            let audioFile = try AVAudioFile(forReading: audioURL)
+            let sampleRate = audioFile.fileFormat.sampleRate
+            let totalFrames = audioFile.length
+            
+            // Calculate the frame position to seek to
+            let targetFrame = AVAudioFramePosition(time * sampleRate)
+            let framesToPlay = totalFrames - targetFrame
+            
+            if targetFrame < totalFrames && framesToPlay > 0 {
+                // Create a buffer and read from the target position
+                let bufferSize = AVAudioFrameCount(min(framesToPlay, 4096))
+                audioFile.framePosition = targetFrame
+                
+                // Schedule the file from the new position
+                playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                    DispatchQueue.main.async {
+                        if self?.playerState == .playing {
+                            self?.playerState = .stopped
+                            self?.currentTime = self?.duration ?? 0
+                        }
+                    }
+                }
+                
+                // Update timing and resume playback if it was playing
+                if wasPlaying {
+                    startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+                    playerNode.play()
+                } else {
+                    startTime = nil
+                }
+            }
+        } catch {
+            print("Failed to seek audio file: \(error)")
+            // Fallback to time-based seeking for demo files
+            if wasPlaying {
+                startTime = Date().addingTimeInterval(-currentTime / Double(speed))
+            }
         }
     }
     
@@ -2112,8 +2197,12 @@ class SimpleNowPlayingViewController: UIViewController {
         let slider = UISlider()
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.addTarget(self, action: #selector(progressChanged), for: .valueChanged)
+        slider.addTarget(self, action: #selector(sliderTouchDown), for: .touchDown)
+        slider.addTarget(self, action: #selector(sliderTouchUp), for: [.touchUpInside, .touchUpOutside])
         return slider
     }()
+    
+    private var isUserDraggingSlider = false
     
     // Speed and Pitch Indicators
     private lazy var speedPitchContainer: UIView = {
@@ -2453,7 +2542,8 @@ class SimpleNowPlayingViewController: UIViewController {
         
         timeLabel.text = String(format: "%d:%02d / %d:%02d", currentMinutes, currentSeconds, totalMinutes, totalSeconds)
         
-        if coordinator.audioPlayer.duration > 0 {
+        // Only update slider if user is not currently dragging it
+        if !isUserDraggingSlider && coordinator.audioPlayer.duration > 0 {
             progressSlider.value = Float(time / coordinator.audioPlayer.duration)
         }
     }
@@ -2522,9 +2612,27 @@ class SimpleNowPlayingViewController: UIViewController {
         }
     }
     
-    @objc private func progressChanged() {
+    @objc private func sliderTouchDown() {
+        isUserDraggingSlider = true
+    }
+    
+    @objc private func sliderTouchUp() {
+        isUserDraggingSlider = false
+        // Perform the seek when user releases the slider
         let newTime = Double(progressSlider.value) * coordinator.audioPlayer.duration
         coordinator.audioPlayer.seek(to: newTime)
+    }
+    
+    @objc private func progressChanged() {
+        // Update time display while dragging, but don't seek until touch up
+        if isUserDraggingSlider {
+            let newTime = Double(progressSlider.value) * coordinator.audioPlayer.duration
+            let currentMinutes = Int(newTime) / 60
+            let currentSeconds = Int(newTime) % 60
+            let totalMinutes = Int(coordinator.audioPlayer.duration) / 60
+            let totalSeconds = Int(coordinator.audioPlayer.duration) % 60
+            timeLabel.text = String(format: "%d:%02d / %d:%02d", currentMinutes, currentSeconds, totalMinutes, totalSeconds)
+        }
     }
     
     @objc private func skipBackTapped() {
