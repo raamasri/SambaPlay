@@ -4,8 +4,55 @@ import Combine
 import MediaPlayer
 import CoreData
 import UniformTypeIdentifiers
+import AudioToolbox
 
 // MARK: - Data Models
+
+enum AudioFormat: String, CaseIterable {
+    case mp3 = "mp3"
+    case aac = "aac"
+    case flac = "flac"
+    case ogg = "ogg"
+    case wav = "wav"
+    case aiff = "aiff"
+    case opus = "opus"
+    case wma = "wma"
+    case caf = "caf"
+    case threegp = "3gp"
+    case amr = "amr"
+    case unknown = "unknown"
+    
+    var displayName: String {
+        switch self {
+        case .mp3: return "MP3"
+        case .aac: return "AAC"
+        case .flac: return "FLAC"
+        case .ogg: return "OGG Vorbis"
+        case .wav: return "WAV"
+        case .aiff: return "AIFF"
+        case .opus: return "Opus"
+        case .wma: return "WMA"
+        case .caf: return "Core Audio"
+        case .threegp: return "3GP"
+        case .amr: return "AMR"
+        case .unknown: return "Unknown"
+        }
+    }
+    
+    var isLossless: Bool {
+        switch self {
+        case .flac, .wav, .aiff, .caf: return true
+        default: return false
+        }
+    }
+    
+    var supportsMetadata: Bool {
+        switch self {
+        case .mp3, .aac, .flac, .ogg, .wma: return true
+        default: return false
+        }
+    }
+}
 
 struct MediaFile: Identifiable, Hashable {
     let id = UUID()
@@ -18,7 +65,25 @@ struct MediaFile: Identifiable, Hashable {
     
     var isAudioFile: Bool {
         guard let ext = fileExtension?.lowercased() else { return false }
-        return ["mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff", "opus"].contains(ext)
+        return ["mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff", "opus", "mp4", "m4b", "caf", "3gp", "amr"].contains(ext)
+    }
+    
+    var audioFormat: AudioFormat {
+        guard let ext = fileExtension?.lowercased() else { return .unknown }
+        switch ext {
+        case "mp3": return .mp3
+        case "m4a", "mp4", "m4b": return .aac
+        case "flac": return .flac
+        case "ogg": return .ogg
+        case "wav": return .wav
+        case "aiff": return .aiff
+        case "opus": return .opus
+        case "wma": return .wma
+        case "caf": return .caf
+        case "3gp": return .threegp
+        case "amr": return .amr
+        default: return .unknown
+        }
     }
     
     var isTextFile: Bool {
@@ -796,7 +861,7 @@ class SimpleNetworkService: ObservableObject {
     }
 }
 
-// MARK: - Simplified Audio Player
+// MARK: - Enhanced Audio Player  
 class SimpleAudioPlayer: NSObject, ObservableObject {
     @Published var playerState: AudioPlayerState = .stopped
     @Published var currentTime: TimeInterval = 0
@@ -806,6 +871,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     @Published var currentFile: MediaFile?
     @Published var subtitle: String?
     @Published var hasRestoredPosition: Bool = false // Indicates if position was restored from memory
+    @Published var audioFormat: AudioFormat = .unknown
+    @Published var isLossless: Bool = false
+    @Published var downloadProgress: Float = 0.0
     
     private var audioEngine = AVAudioEngine()
     private var playerNode = AVAudioPlayerNode()
@@ -814,6 +882,18 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     private var displayLink: CADisplayLink?
     private var startTime: Date?
     private weak var networkService: SimpleNetworkService?
+    
+    // Progressive download support
+    private var downloadTask: URLSessionDownloadTask?
+    private var downloadSession: URLSession?
+    private var tempFileURL: URL?
+    private var expectedContentLength: Int64 = 0
+    
+    // Gapless playback support
+    private var nextPlayerNode: AVAudioPlayerNode?
+    private var nextAudioFile: AVAudioFile?
+    private var crossfadeEnabled: Bool = true
+    private var crossfadeDuration: TimeInterval = 2.0
     
     func setNetworkService(_ service: SimpleNetworkService) {
         self.networkService = service
@@ -875,42 +955,19 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         currentFile = file
         playerState = .stopped
         hasRestoredPosition = false
+        audioFormat = file.audioFormat
+        isLossless = file.audioFormat.isLossless
+        downloadProgress = 0.0
+        
+        // Cancel any existing download
+        downloadTask?.cancel()
         
         // If this is the Sample Song, load the actual bundled audio file
         if file.name == "Sample Song.mp3" {
-            guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else {
-                completion(.failure(NSError(domain: "AudioPlayer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Sample audio file not found in bundle"])))
-                return
-            }
-            
-            do {
-                let audioFile = try AVAudioFile(forReading: audioURL)
-                duration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
-                
-                // Check for saved position and restore it
-                if let savedPosition = networkService?.getSavedPosition(for: file) {
-                    currentTime = savedPosition.position
-                    hasRestoredPosition = true
-                    print("Restored position for \(file.name): \(savedPosition.position)s")
-                } else {
-                    currentTime = 0
-                }
-                
-                // Load the file into the audio engine
-                playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
-                    DispatchQueue.main.async {
-                        self?.playerState = .stopped
-                        // Don't reset currentTime here since we may have restored a position
-                    }
-                }
-                
-                completion(.success(()))
-            } catch {
-                completion(.failure(error))
-            }
+            loadLocalAudioFile(file: file, completion: completion)
         } else {
-            // For other demo files, use simulated duration
-            duration = 180 // 3 minutes demo
+            // For demo files, simulate different audio formats
+            simulateAudioFormat(for: file)
             
             // Check for saved position and restore it
             if let savedPosition = networkService?.getSavedPosition(for: file) {
@@ -923,6 +980,116 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             
             completion(.success(()))
         }
+    }
+    
+    private func loadLocalAudioFile(file: MediaFile, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else {
+            completion(.failure(NSError(domain: "AudioPlayer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Sample audio file not found in bundle"])))
+            return
+        }
+        
+        do {
+            let audioFile = try AVAudioFile(forReading: audioURL)
+            duration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
+            
+            // Detect actual format from file
+            detectAudioFormat(from: audioFile)
+            
+            // Check for saved position and restore it
+            if let savedPosition = networkService?.getSavedPosition(for: file) {
+                currentTime = savedPosition.position
+                hasRestoredPosition = true
+                print("Restored position for \(file.name): \(savedPosition.position)s")
+            } else {
+                currentTime = 0
+            }
+            
+            // Load the file into the audio engine with format-specific handling
+            loadAudioFileIntoEngine(audioFile, completion: completion)
+            
+        } catch {
+            completion(.failure(error))
+        }
+    }
+    
+    private func loadAudioFileIntoEngine(_ audioFile: AVAudioFile, completion: @escaping (Result<Void, Error>) -> Void) {
+        // Handle different audio formats with optimized settings
+        let format = audioFile.fileFormat
+        
+        // Configure engine based on format
+        if format.sampleRate > 48000 {
+            // High sample rate files (96kHz, 192kHz)
+            print("High sample rate detected: \(format.sampleRate)Hz")
+        }
+        
+        if format.channelCount > 2 {
+            // Multichannel audio
+            print("Multichannel audio detected: \(format.channelCount) channels")
+        }
+        
+        playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+            DispatchQueue.main.async {
+                self?.playerState = .stopped
+                // Don't reset currentTime here since we may have restored a position
+            }
+        }
+        
+        completion(.success(()))
+    }
+    
+    private func detectAudioFormat(from audioFile: AVAudioFile) {
+        let format = audioFile.fileFormat
+        
+        // Update UI with actual format information
+        if format.sampleRate >= 96000 {
+            isLossless = true
+        }
+        
+        print("Audio format detected: \(format.sampleRate)Hz, \(format.channelCount) channels, \(format.commonFormat.rawValue)")
+    }
+    
+    private func simulateAudioFormat(for file: MediaFile) {
+        // Simulate different durations and characteristics for different formats
+        switch file.audioFormat {
+        case .flac:
+            duration = 240 // FLAC files tend to be longer
+            isLossless = true
+        case .mp3:
+            duration = 180 // Standard MP3 duration
+            isLossless = false
+        case .aac:
+            duration = 200 // AAC files
+            isLossless = false
+        case .ogg:
+            duration = 190 // OGG files
+            isLossless = false
+        case .wav:
+            duration = 220 // WAV files
+            isLossless = true
+        default:
+            duration = 180
+            isLossless = false
+        }
+    }
+    
+    func loadFileWithProgressiveDownload(_ file: MediaFile, from url: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        currentFile = file
+        playerState = .buffering
+        audioFormat = file.audioFormat
+        isLossless = file.audioFormat.isLossless
+        downloadProgress = 0.0
+        
+        // Setup download session
+        let config = URLSessionConfiguration.default
+        config.allowsCellularAccess = true
+        config.waitsForConnectivity = true
+        downloadSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        
+        // Start progressive download
+        downloadTask = downloadSession?.downloadTask(with: url)
+        downloadTask?.resume()
+        
+        completion(.success(()))
     }
     
     func play() {
@@ -1012,6 +1179,153 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             // For real audio file, update timePitchNode pitch (in semitones)
             let semitones = (pitch - 1.0) * 12.0
             timePitchNode.pitch = semitones * 100.0 // AVAudioUnitTimePitch expects cents (1/100th of semitone)
+        }
+    }
+    
+    // MARK: - Gapless Playback
+    func prepareNextFile(_ file: MediaFile) {
+        guard crossfadeEnabled else { return }
+        
+        // Prepare next audio file for gapless playback
+        if file.name == "Sample Song.mp3" {
+            guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else { return }
+            
+            do {
+                nextAudioFile = try AVAudioFile(forReading: audioURL)
+                
+                // Create and configure next player node
+                nextPlayerNode = AVAudioPlayerNode()
+                guard let nextNode = nextPlayerNode, let nextFile = nextAudioFile else { return }
+                
+                audioEngine.attach(nextNode)
+                audioEngine.connect(nextNode, to: audioEngine.mainMixerNode, format: nextFile.processingFormat)
+                
+                // Schedule the next file
+                nextNode.scheduleFile(nextFile, at: nil)
+                
+            } catch {
+                print("Failed to prepare next file: \(error)")
+            }
+        }
+    }
+    
+    func crossfadeToNextFile() {
+        guard crossfadeEnabled,
+              let nextNode = nextPlayerNode,
+              let nextFile = nextAudioFile else { return }
+        
+        // Start crossfade
+        let fadeOutTime = AVAudioTime(hostTime: mach_absolute_time() + UInt64(0.1 * Double(NSEC_PER_SEC)))
+        let fadeInTime = AVAudioTime(hostTime: mach_absolute_time() + UInt64(0.1 * Double(NSEC_PER_SEC)))
+        
+        // Fade out current player
+        playerNode.volume = 0.0
+        
+        // Fade in next player
+        nextNode.volume = 1.0
+        nextNode.play(at: fadeInTime)
+        
+        // Swap nodes
+        let tempNode = playerNode
+        playerNode = nextNode
+        nextPlayerNode = tempNode
+        
+        // Update duration for new file
+        duration = Double(nextFile.length) / nextFile.fileFormat.sampleRate
+        currentTime = 0
+        
+        // Clean up old node
+        tempNode.stop()
+        audioEngine.detach(tempNode)
+    }
+    
+    func setCrossfadeEnabled(_ enabled: Bool) {
+        crossfadeEnabled = enabled
+    }
+    
+    func setCrossfadeDuration(_ duration: TimeInterval) {
+        crossfadeDuration = max(0.5, min(5.0, duration)) // Limit between 0.5 and 5 seconds
+    }
+}
+
+// MARK: - URLSession Download Delegate
+extension SimpleAudioPlayer: URLSessionDownloadDelegate {
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // Move downloaded file to temp location
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        
+        do {
+            try FileManager.default.moveItem(at: location, to: tempURL)
+            tempFileURL = tempURL
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.downloadProgress = 1.0
+                self?.loadDownloadedFile()
+            }
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.playerState = .error("Download failed: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        expectedContentLength = totalBytesExpectedToWrite
+        let progress = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.downloadProgress = progress
+            
+            // Start playback when we have enough data (e.g., 25%)
+            if progress >= 0.25 && self?.playerState == .buffering {
+                self?.startProgressivePlayback()
+            }
+        }
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            DispatchQueue.main.async { [weak self] in
+                self?.playerState = .error("Download error: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func loadDownloadedFile() {
+        guard let tempURL = tempFileURL else { return }
+        
+        do {
+            let audioFile = try AVAudioFile(forReading: tempURL)
+            duration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
+            
+            // Detect format from downloaded file
+            detectAudioFormat(from: audioFile)
+            
+            // Load into engine
+            loadAudioFileIntoEngine(audioFile) { result in
+                switch result {
+                case .success:
+                    self.playerState = .stopped
+                case .failure(let error):
+                    self.playerState = .error("Failed to load audio: \(error.localizedDescription)")
+                }
+            }
+        } catch {
+            playerState = .error("Failed to read downloaded file: \(error.localizedDescription)")
+        }
+    }
+    
+    private func startProgressivePlayback() {
+        guard let tempURL = tempFileURL else { return }
+        
+        // Start playback with partial file
+        do {
+            let audioFile = try AVAudioFile(forReading: tempURL)
+            playerNode.scheduleFile(audioFile, at: nil)
+            playerState = .playing
+            startTime = Date()
+        } catch {
+            playerState = .error("Failed to start progressive playback: \(error.localizedDescription)")
         }
     }
 }
@@ -1752,6 +2066,16 @@ class SimpleNowPlayingViewController: UIViewController {
         return label
     }()
     
+    private lazy var audioFormatLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textAlignment = .center
+        label.textColor = .secondaryLabel
+        label.text = "Unknown Format"
+        return label
+    }()
+    
     private lazy var timeLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -1947,6 +2271,7 @@ class SimpleNowPlayingViewController: UIViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: settingsButton)
         
         view.addSubview(titleLabel)
+        view.addSubview(audioFormatLabel)
         view.addSubview(positionRestoredLabel)
         view.addSubview(timeLabel)
         view.addSubview(speedPitchContainer)
@@ -1961,7 +2286,11 @@ class SimpleNowPlayingViewController: UIViewController {
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
-            positionRestoredLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            audioFormatLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            audioFormatLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            audioFormatLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            positionRestoredLabel.topAnchor.constraint(equalTo: audioFormatLabel.bottomAnchor, constant: 8),
             positionRestoredLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             positionRestoredLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
