@@ -3047,14 +3047,44 @@ class MainViewController: UIViewController {
         return stackView
     }()
     
-    private lazy var nowPlayingButton: UIButton = {
+    private lazy var nowPlayingSection: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .secondarySystemBackground
+        view.layer.cornerRadius = 12
+        view.layer.borderWidth = 1
+        view.layer.borderColor = UIColor.separator.cgColor
+        view.isHidden = true // Hidden by default
+        return view
+    }()
+    
+    private lazy var nowPlayingTrackLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 16, weight: .medium)
+        label.textColor = .label
+        label.numberOfLines = 1
+        label.textAlignment = .left
+        return label
+    }()
+    
+    private lazy var nowPlayingPlayPauseButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("Now Playing", for: .normal)
-        button.backgroundColor = .systemBlue
-        button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 8
+        button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(togglePlayPause), for: .touchUpInside)
+        button.accessibilityLabel = "Play or Pause"
+        button.tintColor = .systemBlue
+        return button
+    }()
+    
+    private lazy var nowPlayingShowButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "chevron.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(showNowPlaying), for: .touchUpInside)
+        button.accessibilityLabel = "Show Now Playing"
+        button.tintColor = .systemBlue
         return button
     }()
     
@@ -3064,6 +3094,7 @@ class MainViewController: UIViewController {
     private var isLyricsSearching = false // Track if currently searching lyrics
     private var loadedCells: Set<Int> = [] // Track which cells have been loaded for virtual scrolling
     private var cellImageCache: [String: UIImage] = [:] // Local image cache for cells
+    private var tableViewBottomConstraint: NSLayoutConstraint!
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -3245,12 +3276,17 @@ class MainViewController: UIViewController {
         view.addSubview(sourceHistoryContainerView)
         view.addSubview(backButton)
         view.addSubview(tableView)
-        view.addSubview(nowPlayingButton)
+        view.addSubview(nowPlayingSection)
         
         // Setup source history container
         sourceHistoryContainerView.addSubview(sourceHistoryLabel)
         sourceHistoryContainerView.addSubview(sourceHistoryScrollView)
         sourceHistoryScrollView.addSubview(sourceHistoryStackView)
+        
+        // Setup now playing section
+        nowPlayingSection.addSubview(nowPlayingTrackLabel)
+        nowPlayingSection.addSubview(nowPlayingPlayPauseButton)
+        nowPlayingSection.addSubview(nowPlayingShowButton)
         
         NSLayoutConstraint.activate([
             connectionStatusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
@@ -3288,12 +3324,27 @@ class MainViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: nowPlayingButton.topAnchor, constant: -8),
+            tableView.bottomAnchor.constraint(equalTo: nowPlayingSection.topAnchor, constant: -8),
             
-            nowPlayingButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            nowPlayingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            nowPlayingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            nowPlayingButton.heightAnchor.constraint(equalToConstant: 44)
+            nowPlayingSection.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            nowPlayingSection.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            nowPlayingSection.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            nowPlayingSection.heightAnchor.constraint(equalToConstant: 60),
+            
+            // Now playing section internal constraints
+            nowPlayingTrackLabel.leadingAnchor.constraint(equalTo: nowPlayingSection.leadingAnchor, constant: 16),
+            nowPlayingTrackLabel.centerYAnchor.constraint(equalTo: nowPlayingSection.centerYAnchor),
+            nowPlayingTrackLabel.trailingAnchor.constraint(equalTo: nowPlayingPlayPauseButton.leadingAnchor, constant: -12),
+            
+            nowPlayingPlayPauseButton.trailingAnchor.constraint(equalTo: nowPlayingShowButton.leadingAnchor, constant: -8),
+            nowPlayingPlayPauseButton.centerYAnchor.constraint(equalTo: nowPlayingSection.centerYAnchor),
+            nowPlayingPlayPauseButton.widthAnchor.constraint(equalToConstant: 44),
+            nowPlayingPlayPauseButton.heightAnchor.constraint(equalToConstant: 44),
+            
+            nowPlayingShowButton.trailingAnchor.constraint(equalTo: nowPlayingSection.trailingAnchor, constant: -16),
+            nowPlayingShowButton.centerYAnchor.constraint(equalTo: nowPlayingSection.centerYAnchor),
+            nowPlayingShowButton.widthAnchor.constraint(equalToConstant: 44),
+            nowPlayingShowButton.heightAnchor.constraint(equalToConstant: 44)
         ])
     }
     
@@ -3347,6 +3398,21 @@ class MainViewController: UIViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] recentSources in
                 self?.updateSourceHistory(recentSources)
+            }
+            .store(in: &cancellables)
+        
+        // Monitor audio player state to show/hide now playing section
+        coordinator.audioPlayer.$playerState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.updateNowPlayingSection(state)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$currentFile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] file in
+                self?.updateNowPlayingTrack(file)
             }
             .store(in: &cancellables)
     }
@@ -3614,10 +3680,47 @@ class MainViewController: UIViewController {
         present(nav, animated: true)
     }
     
+    @objc private func togglePlayPause() {
+        switch coordinator.audioPlayer.playerState {
+        case .playing:
+            coordinator.audioPlayer.pause()
+        case .paused, .stopped:
+            coordinator.audioPlayer.play()
+        default:
+            break
+        }
+    }
+    
     @objc private func showNowPlaying() {
         let nowPlayingVC = SimpleNowPlayingViewController(coordinator: coordinator)
         let nav = UINavigationController(rootViewController: nowPlayingVC)
         present(nav, animated: true)
+    }
+    
+    private func updateNowPlayingSection(_ state: AudioPlayerState) {
+        let shouldShow = state != .stopped && coordinator.audioPlayer.currentFile != nil
+        
+        UIView.animate(withDuration: 0.3) {
+            self.nowPlayingSection.isHidden = !shouldShow
+            self.view.layoutIfNeeded()
+        }
+        
+        // Update play/pause button icon
+        switch state {
+        case .playing:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Pause"
+        case .paused, .stopped:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Play"
+        default:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Play"
+        }
+    }
+    
+    private func updateNowPlayingTrack(_ file: MediaFile?) {
+        nowPlayingTrackLabel.text = file?.name ?? "No Track"
     }
 }
 
