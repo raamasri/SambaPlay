@@ -262,6 +262,9 @@ class SimpleNetworkService: ObservableObject {
         loadSavedFolders()
         loadRecentSources()
         loadSavedPositions()
+        
+        // Clear all saved positions as requested to reset playback behavior
+        clearAllSavedPositions()
     }
     
     private func setupDemoData() {
@@ -503,6 +506,8 @@ class SimpleNetworkService: ObservableObject {
         savedPositions.removeAll()
         saveSavedPositions()
     }
+    
+
     
     func connect(to server: SambaServer) {
         isLocalMode = false
@@ -987,19 +992,24 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
               let playbackStartTime = playbackStartTime,
               playerNode.isPlaying else { return }
         
-        // Calculate the actual playback time based on player node position
+        // Calculate the actual playback time based on elapsed time since playback started
         let elapsedTime = Date().timeIntervalSince(playbackStartTime)
         let sampleRate = audioFile.fileFormat.sampleRate
         
-        // Calculate current frame position
+        // Calculate current position: start frame + elapsed frames (accounting for speed)
         let elapsedFrames = AVAudioFramePosition(elapsedTime * sampleRate * Double(speed))
         let currentFrame = playbackStartFrame + elapsedFrames
         
         // Convert frame position back to time
-        currentTime = Double(currentFrame) / sampleRate
+        let newCurrentTime = Double(currentFrame) / sampleRate
         
         // Ensure we don't exceed the duration
-        currentTime = min(currentTime, duration)
+        currentTime = min(newCurrentTime, duration)
+        
+        // Debug logging every 5 seconds
+        if Int(currentTime) % 5 == 0 && Int(currentTime) != Int(newCurrentTime) {
+            print("Real audio time: \(currentTime)s (frame \(currentFrame), start frame \(playbackStartFrame))")
+        }
     }
     
     private func saveCurrentPosition() {
@@ -1018,23 +1028,23 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         // Cancel any existing download
         downloadTask?.cancel()
         
+        // Always start from beginning - no automatic position restoration
+        currentTime = 0
+        
         // If this is the Sample Song, load the actual bundled audio file
         if file.name == "Sample Song.mp3" {
             loadLocalAudioFile(file: file, completion: completion)
         } else {
             // For demo files, simulate different audio formats
             simulateAudioFormat(for: file)
-            
-            // Check for saved position and restore it
-            if let savedPosition = networkService?.getSavedPosition(for: file) {
-                currentTime = savedPosition.position
-                hasRestoredPosition = true
-                print("Restored position for \(file.name): \(savedPosition.position)s")
-            } else {
-                currentTime = 0
-            }
-            
             completion(.success(()))
+        }
+        
+        // Check for saved position and offer to restore it manually
+        if let savedPosition = networkService?.getSavedPosition(for: file) {
+            DispatchQueue.main.async { [weak self] in
+                self?.promptForPositionRestore(savedPosition: savedPosition)
+            }
         }
     }
     
@@ -1054,16 +1064,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             // Detect actual format from file
             detectAudioFormat(from: newAudioFile)
             
-            // Check for saved position and restore it
-            if let savedPosition = networkService?.getSavedPosition(for: file) {
-                currentTime = savedPosition.position
-                hasRestoredPosition = true
-                print("Restored position for \(file.name): \(savedPosition.position)s")
-            } else {
-                currentTime = 0
-            }
-            
-            // Initialize tracking variables
+            // Initialize tracking variables - always start from beginning
             playbackStartFrame = 0
             playbackStartTime = nil
             
@@ -1161,8 +1162,28 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     private func playRealAudioFile() {
         guard let audioURL = Bundle.main.url(forResource: "Sample Song", withExtension: "mp3") else { return }
         
+        // If we already have an audio file set up from seeking, just play it
+        if let existingAudioFile = audioFile, playbackStartTime == nil {
+            print("Using existing audio file from seeking, playing from frame \(playbackStartFrame)")
+            
+            // Schedule the already-positioned file
+            playerNode.scheduleFile(existingAudioFile, at: nil) { [weak self] in
+                DispatchQueue.main.async {
+                    if self?.playerState == .playing {
+                        self?.playerState = .stopped
+                    }
+                }
+            }
+            
+            // Start playback from the seek position
+            self.playbackStartTime = Date()
+            playerNode.play()
+            print("Started real audio playback from seek position \(currentTime)s")
+            return
+        }
+        
         do {
-            // Always reload the file to ensure proper seeking
+            // Stop current playback
             playerNode.stop()
             
             let newAudioFile = try AVAudioFile(forReading: audioURL)
@@ -1172,6 +1193,8 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             // Calculate the frame position to start from (current time)
             let startFrame = AVAudioFramePosition(currentTime * sampleRate)
             let framesToPlay = totalFrames - startFrame
+            
+            print("Playing real audio from \(currentTime)s (frame \(startFrame)/\(totalFrames))")
             
             if startFrame < totalFrames && framesToPlay > 0 {
                 // Set the file position to the current time
@@ -1193,6 +1216,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                 
                 // Start playback
                 playerNode.play()
+                print("Started real audio playback from \(currentTime)s")
             }
         } catch {
             print("Failed to play real audio file: \(error)")
@@ -1203,12 +1227,16 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     func pause() {
         if let file = currentFile, file.name == "Sample Song.mp3" {
-            playerNode.pause()
+            if playerNode.isPlaying {
+                playerNode.pause()
+                print("Paused real audio at \(currentTime)s")
+            }
         }
         playerState = .paused
         
         // Save current position when pausing
         saveCurrentPosition()
+        print("Audio paused at \(currentTime)s, state: \(playerState)")
     }
     
     func stop() {
@@ -1229,6 +1257,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     func seek(to time: TimeInterval) {
         let clampedTime = max(0, min(time, duration))
+        print("Seeking from \(currentTime)s to \(clampedTime)s")
         currentTime = clampedTime
         
         // Handle real audio file seeking
@@ -1260,6 +1289,8 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             let targetFrame = AVAudioFramePosition(time * sampleRate)
             let framesToPlay = totalFrames - targetFrame
             
+            print("Seeking: time=\(time)s, targetFrame=\(targetFrame), totalFrames=\(totalFrames)")
+            
             if targetFrame < totalFrames && framesToPlay > 0 {
                 // Set the file position to the target time
                 newAudioFile.framePosition = targetFrame
@@ -1268,21 +1299,25 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                 self.audioFile = newAudioFile
                 self.playbackStartFrame = targetFrame
                 
-                // Schedule the file from the new position
-                playerNode.scheduleFile(newAudioFile, at: nil) { [weak self] in
-                    DispatchQueue.main.async {
-                        if self?.playerState == .playing {
-                            self?.playerState = .stopped
+                // Only schedule and play if we were playing before
+                if wasPlaying {
+                    // Schedule the file from the new position
+                    playerNode.scheduleFile(newAudioFile, at: nil) { [weak self] in
+                        DispatchQueue.main.async {
+                            if self?.playerState == .playing {
+                                self?.playerState = .stopped
+                            }
                         }
                     }
-                }
-                
-                // Resume playback if it was playing
-                if wasPlaying {
+                    
+                    // Resume playback immediately
                     self.playbackStartTime = Date()
                     playerNode.play()
+                    print("Resumed playback from \(time)s after seeking")
                 } else {
+                    // Just update the position for when play is pressed later
                     self.playbackStartTime = nil
+                    print("Seeked to \(time)s, ready to play")
                 }
             }
         } catch {
@@ -1374,6 +1409,50 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     func setCrossfadeDuration(_ duration: TimeInterval) {
         crossfadeDuration = max(0.5, min(5.0, duration)) // Limit between 0.5 and 5 seconds
+    }
+    
+    // Method to prompt user for position restoration
+    private func promptForPositionRestore(savedPosition: PlaybackPosition) {
+        let currentMinutes = Int(savedPosition.position) / 60
+        let currentSeconds = Int(savedPosition.position) % 60
+        let progressPercent = Int(savedPosition.progressPercentage)
+        
+        let alert = UIAlertController(
+            title: "Resume Playback",
+            message: "You previously stopped at \(currentMinutes):\(String(format: "%02d", currentSeconds)) (\(progressPercent)% complete). Would you like to resume from that position?",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Resume", style: .default) { [weak self] _ in
+            self?.restorePosition(savedPosition.position)
+        })
+        
+        alert.addAction(UIAlertAction(title: "Start Over", style: .cancel) { [weak self] _ in
+            // Clear the saved position since user chose to start over
+            if let file = self?.currentFile {
+                self?.networkService?.clearSavedPosition(for: file)
+            }
+        })
+        
+        // Present the alert from the main view controller
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first,
+           let rootViewController = window.rootViewController {
+            rootViewController.present(alert, animated: true)
+        }
+    }
+    
+    private func restorePosition(_ position: TimeInterval) {
+        currentTime = position
+        hasRestoredPosition = true
+        
+        // If it's the real audio file, update the playback start frame
+        if let file = currentFile, file.name == "Sample Song.mp3", let audioFile = audioFile {
+            let sampleRate = audioFile.fileFormat.sampleRate
+            playbackStartFrame = AVAudioFramePosition(position * sampleRate)
+        }
+        
+        print("Manually restored position to \(position)s")
     }
 }
 
@@ -1510,8 +1589,11 @@ class MainViewController: UIViewController {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.textAlignment = .center
-        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.adjustsFontForContentSizeCategory = true
         label.textColor = .systemBlue
+        label.accessibilityLabel = "Connection status"
+        label.accessibilityTraits = .staticText
         return label
     }()
     
@@ -1519,9 +1601,12 @@ class MainViewController: UIViewController {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.textAlignment = .center
-        label.font = .systemFont(ofSize: 12, weight: .regular)
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.adjustsFontForContentSizeCategory = true
         label.textColor = .secondaryLabel
         label.numberOfLines = 1
+        label.accessibilityLabel = "Current directory path"
+        label.accessibilityTraits = .staticText
         return label
     }()
     
@@ -1529,9 +1614,13 @@ class MainViewController: UIViewController {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setTitle("← Back", for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+        button.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        button.titleLabel?.adjustsFontForContentSizeCategory = true
         button.addTarget(self, action: #selector(navigateBack), for: .touchUpInside)
         button.isHidden = true
+        button.accessibilityLabel = "Navigate back to previous directory"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to go back one level in the directory structure"
         return button
     }()
     
@@ -1583,6 +1672,8 @@ class MainViewController: UIViewController {
     }()
     
     private var currentFiles: [MediaFile] = []
+    private var allFiles: [MediaFile] = [] // Store all files for search filtering
+    private var isSearching = false
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -1597,6 +1688,7 @@ class MainViewController: UIViewController {
         super.viewDidLoad()
         setupUI()
         setupBindings()
+        setupDragAndDrop()
         connectToDemo()
     }
     
@@ -1605,6 +1697,16 @@ class MainViewController: UIViewController {
         view.backgroundColor = .systemBackground
         
         navigationController?.navigationBar.prefersLargeTitles = true
+        
+        // Setup search controller
+        let searchController = UISearchController(searchResultsController: nil)
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Search files and folders"
+        searchController.searchBar.accessibilityLabel = "Search files and folders"
+        searchController.searchBar.accessibilityTraits = .searchField
+        navigationItem.searchController = searchController
+        definesPresentationContext = true
         
         // Navigation bar buttons
         navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -1689,7 +1791,10 @@ class MainViewController: UIViewController {
         coordinator.networkService.$currentFiles
             .receive(on: DispatchQueue.main)
             .sink { [weak self] files in
-                self?.currentFiles = files
+                self?.allFiles = files
+                if self?.isSearching == false {
+                    self?.currentFiles = files
+                }
                 self?.tableView.reloadData()
             }
             .store(in: &cancellables)
@@ -1797,6 +1902,15 @@ class MainViewController: UIViewController {
         if let demoServer = coordinator.networkService.savedServers.first {
             coordinator.networkService.connect(to: demoServer)
         }
+    }
+    
+    private func setupDragAndDrop() {
+        // Enable drag and drop on the table view
+        tableView.dragInteractionEnabled = true
+        tableView.dropDelegate = self
+        
+        // Enable drag and drop on the main view for importing files
+        view.addInteraction(UIDropInteraction(delegate: self))
     }
     
     @objc private func navigateBack() {
@@ -1968,20 +2082,36 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
         let file = currentFiles[indexPath.row]
         
         cell.textLabel?.text = file.name
+        cell.textLabel?.font = .preferredFont(forTextStyle: .body)
+        cell.textLabel?.adjustsFontForContentSizeCategory = true
+        
         cell.detailTextLabel?.text = file.isDirectory ? "Folder" : ByteCountFormatter().string(fromByteCount: file.size)
+        cell.detailTextLabel?.font = .preferredFont(forTextStyle: .caption1)
+        cell.detailTextLabel?.adjustsFontForContentSizeCategory = true
         
         if file.isDirectory {
             cell.imageView?.image = UIImage(systemName: "folder.fill")
             cell.accessoryType = .disclosureIndicator
+            cell.accessibilityLabel = "Folder: \(file.name)"
+            cell.accessibilityTraits = .button
+            cell.accessibilityHint = "Double tap to open folder"
         } else if file.isAudioFile {
             cell.imageView?.image = UIImage(systemName: "music.note")
             cell.accessoryType = .none
+            cell.accessibilityLabel = "Audio file: \(file.name), \(ByteCountFormatter().string(fromByteCount: file.size))"
+            cell.accessibilityTraits = .button
+            cell.accessibilityHint = "Double tap to play audio file"
         } else if file.isTextFile {
             cell.imageView?.image = UIImage(systemName: "doc.text.fill")
             cell.accessoryType = .disclosureIndicator
+            cell.accessibilityLabel = "Text file: \(file.name), \(ByteCountFormatter().string(fromByteCount: file.size))"
+            cell.accessibilityTraits = .button
+            cell.accessibilityHint = "Double tap to view text file"
         } else {
             cell.imageView?.image = UIImage(systemName: "doc.fill")
             cell.accessoryType = .none
+            cell.accessibilityLabel = "File: \(file.name), \(ByteCountFormatter().string(fromByteCount: file.size))"
+            cell.accessibilityTraits = .staticText
         }
         
         return cell
@@ -2032,6 +2162,128 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
         let textViewerVC = TextViewerViewController(file: file, networkService: coordinator.networkService)
         let nav = UINavigationController(rootViewController: textViewerVC)
         present(nav, animated: true)
+    }
+}
+
+// MARK: - Search Results Updating
+extension MainViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let searchText = searchController.searchBar.text ?? ""
+        
+        if searchText.isEmpty {
+            isSearching = false
+            currentFiles = allFiles
+        } else {
+            isSearching = true
+            currentFiles = allFiles.filter { file in
+                file.name.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+        
+        tableView.reloadData()
+    }
+}
+
+// MARK: - Drag and Drop Support
+extension MainViewController: UITableViewDropDelegate, UIDropInteractionDelegate {
+    
+    // MARK: - Table View Drop Delegate
+    func tableView(_ tableView: UITableView, canHandle session: UIDropSession) -> Bool {
+        return session.canLoadObjects(ofClass: URL.self)
+    }
+    
+    func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
+        return UITableViewDropProposal(operation: .copy, intent: .insertIntoDestinationIndexPath)
+    }
+    
+    func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
+        for item in coordinator.session.items {
+            item.itemProvider.loadObject(ofClass: URL.self) { [weak self] (url, error) in
+                guard let url = url, error == nil else { return }
+                
+                DispatchQueue.main.async {
+                    self?.handleDroppedFile(url: url)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Drop Interaction Delegate (for main view)
+    func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {
+        return session.canLoadObjects(ofClass: URL.self)
+    }
+    
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: UIDropSession) -> UIDropProposal {
+        return UIDropProposal(operation: .copy)
+    }
+    
+    func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
+        for item in session.items {
+            item.itemProvider.loadObject(ofClass: URL.self) { [weak self] (url, error) in
+                guard let url = url, error == nil else { return }
+                
+                DispatchQueue.main.async {
+                    self?.handleDroppedFile(url: url)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Drop Handling
+    private func handleDroppedFile(url: URL) {
+        // Check if it's an audio file
+        let audioExtensions = ["mp3", "m4a", "wav", "aiff", "flac", "ogg", "wma", "aac"]
+        let fileExtension = url.pathExtension.lowercased()
+        
+        guard audioExtensions.contains(fileExtension) else {
+            showAlert(title: "Unsupported File", message: "Only audio files can be imported via drag and drop.")
+            return
+        }
+        
+        // Start accessing security-scoped resource
+        guard url.startAccessingSecurityScopedResource() else {
+            showAlert(title: "Access Denied", message: "Cannot access the dropped file.")
+            return
+        }
+        
+        defer {
+            url.stopAccessingSecurityScopedResource()
+        }
+        
+        // Create a MediaFile from the dropped URL
+        let fileName = url.lastPathComponent
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+        
+        let mediaFile = MediaFile(
+            name: fileName,
+            path: url.path,
+            size: Int64(fileSize),
+            modificationDate: modificationDate,
+            isDirectory: false,
+            fileExtension: url.pathExtension
+        )
+        
+        // Play the dropped file
+        coordinator.audioPlayer.loadFile(mediaFile) { [weak self] result in
+            switch result {
+            case .success:
+                self?.coordinator.audioPlayer.play()
+                self?.showNowPlaying()
+                
+                // Show success message
+                self?.showAlert(title: "File Imported", message: "Successfully imported and playing: \(fileName)")
+                
+            case .failure(let error):
+                self?.showAlert(title: "Import Error", message: "Failed to import file: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func showAlert(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
 
@@ -2192,9 +2444,12 @@ class SimpleNowPlayingViewController: UIViewController {
     private lazy var titleLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 24, weight: .bold)
+        label.font = .preferredFont(forTextStyle: .title1)
+        label.adjustsFontForContentSizeCategory = true
         label.textAlignment = .center
         label.numberOfLines = 2
+        label.accessibilityLabel = "Currently playing track"
+        label.accessibilityTraits = .header
         return label
     }()
     
@@ -2234,6 +2489,9 @@ class SimpleNowPlayingViewController: UIViewController {
         slider.addTarget(self, action: #selector(progressChanged), for: .valueChanged)
         slider.addTarget(self, action: #selector(sliderTouchDown), for: .touchDown)
         slider.addTarget(self, action: #selector(sliderTouchUp), for: [.touchUpInside, .touchUpOutside])
+        slider.accessibilityLabel = "Playback progress"
+        slider.accessibilityTraits = .adjustable
+        slider.accessibilityHint = "Swipe up or down to adjust playback position"
         return slider
     }()
     
@@ -2336,6 +2594,9 @@ class SimpleNowPlayingViewController: UIViewController {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(skipBackTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Skip back 15 seconds"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to go back 15 seconds"
         return button
     }()
     
@@ -2344,6 +2605,9 @@ class SimpleNowPlayingViewController: UIViewController {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(playPauseTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Play"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to play or pause audio"
         return button
     }()
     
@@ -2352,6 +2616,9 @@ class SimpleNowPlayingViewController: UIViewController {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(skipForwardTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Skip forward 30 seconds"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to go forward 30 seconds"
         return button
     }()
     
@@ -2562,10 +2829,16 @@ class SimpleNowPlayingViewController: UIViewController {
         switch state {
         case .playing:
             playPauseButton.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+            playPauseButton.accessibilityLabel = "Pause"
+            playPauseButton.accessibilityValue = "Currently playing"
         case .paused, .stopped:
             playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+            playPauseButton.accessibilityLabel = "Play"
+            playPauseButton.accessibilityValue = state == .paused ? "Paused" : "Stopped"
         default:
             playPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 32, weight: .medium)), for: .normal)
+            playPauseButton.accessibilityLabel = "Play"
+            playPauseButton.accessibilityValue = "Ready to play"
         }
     }
     
@@ -2906,7 +3179,7 @@ class AudioSettingsViewController: UIViewController {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.backgroundColor = .secondarySystemBackground
         container.layer.cornerRadius = 16
-        container.layer.shadowColor = UIColor.black.cgColor
+        container.layer.shadowColor = UIColor.label.cgColor
         container.layer.shadowOffset = CGSize(width: 0, height: 2)
         container.layer.shadowOpacity = 0.1
         container.layer.shadowRadius = 4
@@ -3087,7 +3360,7 @@ class AudioSettingsViewController: UIViewController {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.backgroundColor = .secondarySystemBackground
         container.layer.cornerRadius = 16
-        container.layer.shadowColor = UIColor.black.cgColor
+        container.layer.shadowColor = UIColor.label.cgColor
         container.layer.shadowOffset = CGSize(width: 0, height: 2)
         container.layer.shadowOpacity = 0.1
         container.layer.shadowRadius = 4
@@ -3210,7 +3483,7 @@ class AudioSettingsViewController: UIViewController {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.backgroundColor = .secondarySystemBackground
         container.layer.cornerRadius = 16
-        container.layer.shadowColor = UIColor.black.cgColor
+        container.layer.shadowColor = UIColor.label.cgColor
         container.layer.shadowOffset = CGSize(width: 0, height: 2)
         container.layer.shadowOpacity = 0.1
         container.layer.shadowRadius = 4
