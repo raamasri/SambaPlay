@@ -208,6 +208,457 @@ struct PlaybackPosition: Codable {
     }
 }
 
+// MARK: - Memory Management Models
+class MemoryManager: ObservableObject {
+    static let shared = MemoryManager()
+    
+    @Published var memoryUsage: Double = 0.0
+    @Published var cacheSize: Int64 = 0
+    @Published var isMemoryWarning = false
+    
+    private let maxCacheSize: Int64 = 100 * 1024 * 1024 // 100MB
+    private let memoryWarningThreshold: Double = 0.8 // 80%
+    private var memoryTimer: Timer?
+    
+    private init() {
+        startMemoryMonitoring()
+        setupMemoryWarningNotification()
+    }
+    
+    private func startMemoryMonitoring() {
+        memoryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.updateMemoryUsage()
+        }
+    }
+    
+    private func updateMemoryUsage() {
+        let usage = getCurrentMemoryUsage()
+        DispatchQueue.main.async {
+            self.memoryUsage = usage
+            self.isMemoryWarning = usage > self.memoryWarningThreshold
+            
+            if self.isMemoryWarning {
+                self.performMemoryCleanup()
+            }
+        }
+    }
+    
+    private func getCurrentMemoryUsage() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        
+        if kerr == KERN_SUCCESS {
+            let usedMemory = Double(info.resident_size)
+            let totalMemory = Double(ProcessInfo.processInfo.physicalMemory)
+            return usedMemory / totalMemory
+        }
+        
+        return 0.0
+    }
+    
+    private func setupMemoryWarningNotification() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+    }
+    
+    private func handleMemoryWarning() {
+        print("⚠️ [MemoryManager] Memory warning received - performing aggressive cleanup")
+        performMemoryCleanup()
+        ImageCacheManager.shared.clearCache()
+        
+        DispatchQueue.main.async {
+            self.isMemoryWarning = true
+        }
+    }
+    
+    func performMemoryCleanup() {
+        // Trigger garbage collection
+        autoreleasepool {
+            // Force cleanup of autoreleased objects
+        }
+        
+        // Clear URL cache
+        URLCache.shared.removeAllCachedResponses()
+        
+        // Notify other components to clean up
+        NotificationCenter.default.post(name: .memoryCleanupRequested, object: nil)
+    }
+    
+    func updateCacheSize(_ size: Int64) {
+        DispatchQueue.main.async {
+            self.cacheSize = size
+        }
+    }
+    
+    func shouldEvictCache() -> Bool {
+        return cacheSize > maxCacheSize || isMemoryWarning
+    }
+    
+    deinit {
+        memoryTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+}
+
+// MARK: - Image Cache Manager
+class ImageCacheManager: NSObject, ObservableObject {
+    static let shared = ImageCacheManager()
+    
+    private let cache = NSCache<NSString, UIImage>()
+    private let fileManager = FileManager.default
+    private let cacheDirectory: URL
+    private let maxMemoryCount = 50
+    private let maxMemorySize = 50 * 1024 * 1024 // 50MB
+    
+    @Published var cacheHitRate: Double = 0.0
+    private var cacheHits = 0
+    private var cacheMisses = 0
+    
+    private override init() {
+        // Setup cache directory
+        let cacheDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        cacheDirectory = cacheDir.appendingPathComponent("ImageCache")
+        
+        super.init()
+        
+        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        
+        // Configure NSCache
+        cache.countLimit = maxMemoryCount
+        cache.totalCostLimit = maxMemorySize
+        cache.delegate = self
+        
+        // Setup memory cleanup notification
+        NotificationCenter.default.addObserver(
+            forName: .memoryCleanupRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.clearMemoryCache()
+        }
+        
+        // Update memory manager with cache size
+        updateCacheSize()
+    }
+    
+    func image(for key: String) -> UIImage? {
+        let cacheKey = NSString(string: key)
+        
+        // Check memory cache first
+        if let image = cache.object(forKey: cacheKey) {
+            cacheHits += 1
+            updateCacheHitRate()
+            return image
+        }
+        
+        // Check disk cache
+        let fileURL = cacheDirectory.appendingPathComponent(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)
+        if let data = try? Data(contentsOf: fileURL),
+           let image = UIImage(data: data) {
+            
+            // Store in memory cache for future access
+            cache.setObject(image, forKey: cacheKey, cost: estimateImageSize(image))
+            cacheHits += 1
+            updateCacheHitRate()
+            return image
+        }
+        
+        cacheMisses += 1
+        updateCacheHitRate()
+        return nil
+    }
+    
+    func setImage(_ image: UIImage, for key: String) {
+        let cacheKey = NSString(string: key)
+        let cost = estimateImageSize(image)
+        
+        // Store in memory cache
+        cache.setObject(image, forKey: cacheKey, cost: cost)
+        
+        // Store in disk cache asynchronously
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.storeToDisk(image: image, key: key)
+        }
+        
+        updateCacheSize()
+    }
+    
+    private func storeToDisk(image: UIImage, key: String) {
+        guard let data = image.jpegData(compressionQuality: 0.8) else { return }
+        
+        let fileName = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        let fileURL = cacheDirectory.appendingPathComponent(fileName)
+        
+        try? data.write(to: fileURL)
+    }
+    
+    private func estimateImageSize(_ image: UIImage) -> Int {
+        let width = Int(image.size.width * image.scale)
+        let height = Int(image.size.height * image.scale)
+        return width * height * 4 // 4 bytes per pixel for RGBA
+    }
+    
+    func clearCache() {
+        clearMemoryCache()
+        clearDiskCache()
+        updateCacheSize()
+    }
+    
+    func clearMemoryCache() {
+        cache.removeAllObjects()
+        print("🗑️ [ImageCache] Memory cache cleared")
+    }
+    
+    private func clearDiskCache() {
+        do {
+            let files = try fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)
+            for file in files {
+                try fileManager.removeItem(at: file)
+            }
+            print("🗑️ [ImageCache] Disk cache cleared")
+        } catch {
+            print("❌ [ImageCache] Failed to clear disk cache: \(error)")
+        }
+    }
+    
+    private func updateCacheSize() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            
+            let diskSize = self.calculateDiskCacheSize()
+            let memorySize = Int64(self.cache.totalCostLimit)
+            let totalSize = diskSize + memorySize
+            
+            MemoryManager.shared.updateCacheSize(totalSize)
+        }
+    }
+    
+    private func calculateDiskCacheSize() -> Int64 {
+        do {
+            let files = try fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: [.fileSizeKey])
+            return files.compactMap { url in
+                try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            }.reduce(0) { Int64($0) + Int64($1) }
+        } catch {
+            return 0
+        }
+    }
+    
+    private func updateCacheHitRate() {
+        let total = cacheHits + cacheMisses
+        if total > 0 {
+            DispatchQueue.main.async {
+                self.cacheHitRate = Double(self.cacheHits) / Double(total)
+            }
+        }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+}
+
+extension ImageCacheManager: NSCacheDelegate {
+    func cache(_ cache: NSCache<AnyObject, AnyObject>, willEvictObject obj: Any) {
+        print("🗑️ [ImageCache] Evicting object from memory cache")
+    }
+}
+
+// MARK: - Background Processing Manager
+class BackgroundProcessingManager: ObservableObject {
+    static let shared = BackgroundProcessingManager()
+    
+    private let fileOperationQueue = DispatchQueue(label: "com.sambaplay.fileops", qos: .utility, attributes: .concurrent)
+    private let imageProcessingQueue = DispatchQueue(label: "com.sambaplay.imageprocessing", qos: .userInitiated)
+    private let networkQueue = DispatchQueue(label: "com.sambaplay.network", qos: .userInitiated, attributes: .concurrent)
+    
+    @Published var activeOperations = 0
+    @Published var queuedOperations = 0
+    
+    private let operationQueue = OperationQueue()
+    private var operationCount = 0
+    
+    private init() {
+        operationQueue.maxConcurrentOperationCount = 4
+        operationQueue.qualityOfService = .utility
+    }
+    
+    func performFileOperation<T>(_ operation: @escaping () throws -> T, completion: @escaping (Result<T, Error>) -> Void) {
+        incrementOperationCount()
+        
+        fileOperationQueue.async { [weak self] in
+            do {
+                let result = try operation()
+                DispatchQueue.main.async {
+                    completion(.success(result))
+                    self?.decrementOperationCount()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                    self?.decrementOperationCount()
+                }
+            }
+        }
+    }
+    
+    func processImageAsync(_ image: UIImage, for key: String, completion: @escaping (UIImage?) -> Void) {
+        incrementOperationCount()
+        
+        imageProcessingQueue.async { [weak self] in
+            let processedImage = self?.processImage(image)
+            
+            DispatchQueue.main.async {
+                completion(processedImage)
+                self?.decrementOperationCount()
+            }
+        }
+    }
+    
+    func performNetworkOperation<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        return try await withCheckedThrowingContinuation { continuation in
+            incrementOperationCount()
+            
+            Task {
+                do {
+                    let result = try await operation()
+                    decrementOperationCount()
+                    continuation.resume(returning: result)
+                } catch {
+                    decrementOperationCount()
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    private func processImage(_ image: UIImage) -> UIImage? {
+        // Resize image for thumbnail if needed
+        let maxSize: CGFloat = 300
+        let size = image.size
+        
+        if size.width <= maxSize && size.height <= maxSize {
+            return image
+        }
+        
+        let ratio = min(maxSize / size.width, maxSize / size.height)
+        let newSize = CGSize(width: size.width * ratio, height: size.height * ratio)
+        
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 0.0)
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return resizedImage
+    }
+    
+    private func incrementOperationCount() {
+        DispatchQueue.main.async {
+            self.operationCount += 1
+            self.activeOperations = self.operationCount
+        }
+    }
+    
+    private func decrementOperationCount() {
+        DispatchQueue.main.async {
+            self.operationCount = max(0, self.operationCount - 1)
+            self.activeOperations = self.operationCount
+        }
+    }
+    
+    func cancelAllOperations() {
+        operationQueue.cancelAllOperations()
+        DispatchQueue.main.async {
+            self.operationCount = 0
+            self.activeOperations = 0
+        }
+    }
+}
+
+// MARK: - Virtual Scrolling Manager
+class VirtualScrollingManager: ObservableObject {
+    @Published var visibleRange: Range<Int> = 0..<0
+    @Published var totalItems = 0
+    
+    private let bufferSize = 10
+    private let itemHeight: CGFloat = 60
+    
+    func updateVisibleRange(for scrollView: UIScrollView) {
+        let contentOffset = scrollView.contentOffset.y
+        let visibleHeight = scrollView.bounds.height
+        
+        let startIndex = max(0, Int(contentOffset / itemHeight) - bufferSize)
+        let endIndex = min(totalItems, Int((contentOffset + visibleHeight) / itemHeight) + bufferSize)
+        
+        let newRange = startIndex..<endIndex
+        
+        if newRange != visibleRange {
+            visibleRange = newRange
+        }
+    }
+    
+    func setTotalItems(_ count: Int) {
+        totalItems = count
+    }
+    
+    func shouldLoadItem(at index: Int) -> Bool {
+        return visibleRange.contains(index)
+    }
+}
+
+// MARK: - Performance Metrics
+class PerformanceMetrics: ObservableObject {
+    static let shared = PerformanceMetrics()
+    
+    @Published var averageLoadTime: TimeInterval = 0
+    @Published var memoryEfficiency: Double = 0
+    @Published var cacheEffectiveness: Double = 0
+    
+    private var loadTimes: [TimeInterval] = []
+    private let maxSamples = 100
+    
+    private init() {}
+    
+    func recordLoadTime(_ time: TimeInterval) {
+        loadTimes.append(time)
+        if loadTimes.count > maxSamples {
+            loadTimes.removeFirst()
+        }
+        
+        DispatchQueue.main.async {
+            self.averageLoadTime = self.loadTimes.reduce(0, +) / Double(self.loadTimes.count)
+        }
+    }
+    
+    func updateMemoryEfficiency(_ efficiency: Double) {
+        DispatchQueue.main.async {
+            self.memoryEfficiency = efficiency
+        }
+    }
+    
+    func updateCacheEffectiveness(_ effectiveness: Double) {
+        DispatchQueue.main.async {
+            self.cacheEffectiveness = effectiveness
+        }
+    }
+}
+
+// MARK: - Notification Extensions
+extension Notification.Name {
+    static let memoryCleanupRequested = Notification.Name("memoryCleanupRequested")
+}
+
 // MARK: - Playback Queue Models
 enum PlaybackMode: String, CaseIterable, Codable {
     case normal = "normal"
@@ -2468,6 +2919,11 @@ class SambaPlayCoordinator {
     let audioPlayer = SimpleAudioPlayer()
     let settings = AppSettings.shared
     let playbackQueue = PlaybackQueue()
+    let memoryManager = MemoryManager.shared
+    let imageCache = ImageCacheManager.shared
+    let backgroundProcessor = BackgroundProcessingManager.shared
+    let virtualScrollManager = VirtualScrollingManager()
+    let performanceMetrics = PerformanceMetrics.shared
     
     private init() {
         // Connect the audio player with the network service for position memory
@@ -2476,6 +2932,24 @@ class SambaPlayCoordinator {
         
         // Load saved queue on startup
         playbackQueue.loadFromUserDefaults()
+        
+        // Setup memory management
+        setupMemoryManagement()
+    }
+    
+    private func setupMemoryManagement() {
+        // Monitor cache effectiveness
+        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.updatePerformanceMetrics()
+        }
+    }
+    
+    private func updatePerformanceMetrics() {
+        let cacheEffectiveness = imageCache.cacheHitRate
+        let memoryEfficiency = 1.0 - memoryManager.memoryUsage
+        
+        performanceMetrics.updateCacheEffectiveness(cacheEffectiveness)
+        performanceMetrics.updateMemoryEfficiency(memoryEfficiency)
     }
     
     func createMainViewController() -> UIViewController {
@@ -2588,6 +3062,8 @@ class MainViewController: UIViewController {
     private var allFiles: [MediaFile] = [] // Store all files for search filtering
     private var isSearching = false
     private var isLyricsSearching = false // Track if currently searching lyrics
+    private var loadedCells: Set<Int> = [] // Track which cells have been loaded for virtual scrolling
+    private var cellImageCache: [String: UIImage] = [:] // Local image cache for cells
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -2604,7 +3080,66 @@ class MainViewController: UIViewController {
         setupBindings()
         setupDragAndDrop()
         setupSettingsObserver()
+        setupMemoryMonitoring()
         connectToDemo()
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        
+        // Update virtual scrolling when view appears
+        coordinator.virtualScrollManager.setTotalItems(currentFiles.count)
+    }
+    
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        
+        // Clean up memory when view disappears
+        cleanupMemory()
+    }
+    
+    private func setupMemoryMonitoring() {
+        // Monitor memory warnings
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+        
+        // Monitor memory cleanup requests
+        NotificationCenter.default.addObserver(
+            forName: .memoryCleanupRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.cleanupMemory()
+        }
+    }
+    
+    private func handleMemoryWarning() {
+        print("⚠️ [MainVC] Memory warning received - performing cleanup")
+        cleanupMemory()
+        
+        // Cancel any ongoing background operations
+        coordinator.backgroundProcessor.cancelAllOperations()
+    }
+    
+    private func cleanupMemory() {
+        // Clear local caches
+        cellImageCache.removeAll()
+        loadedCells.removeAll()
+        
+        // Clear global image cache
+        coordinator.imageCache.clearMemoryCache()
+        
+        // Reload visible cells only
+        if let visiblePaths = tableView.indexPathsForVisibleRows {
+            tableView.reloadRows(at: visiblePaths, with: .none)
+        }
+        
+        print("🧹 [MainVC] Memory cleanup completed")
     }
     
     private func setupSettingsObserver() {
@@ -2773,11 +3308,24 @@ class MainViewController: UIViewController {
         coordinator.networkService.$currentFiles
             .receive(on: DispatchQueue.main)
             .sink { [weak self] files in
-                self?.allFiles = files
-                if self?.isSearching == false {
-                    self?.currentFiles = files
+                guard let self = self else { return }
+                
+                self.allFiles = files
+                if self.isSearching == false {
+                    self.currentFiles = files
                 }
-                self?.tableView.reloadData()
+                
+                // Update virtual scrolling manager
+                self.coordinator.virtualScrollManager.setTotalItems(files.count)
+                self.loadedCells.removeAll()
+                self.cellImageCache.removeAll()
+                
+                // Clean up memory if needed
+                if self.coordinator.memoryManager.shouldEvictCache() {
+                    self.coordinator.imageCache.clearMemoryCache()
+                }
+                
+                self.tableView.reloadData()
             }
             .store(in: &cancellables)
         
@@ -3080,9 +3628,30 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let startTime = CFAbsoluteTimeGetCurrent()
         let cell = tableView.dequeueReusableCell(withIdentifier: "FileCell", for: indexPath)
         let file = currentFiles[indexPath.row]
         
+        // Virtual scrolling optimization - only load visible cells
+        let shouldLoadCell = coordinator.virtualScrollManager.shouldLoadItem(at: indexPath.row)
+        
+        if shouldLoadCell {
+            configureCellContent(cell, for: file, at: indexPath)
+            loadedCells.insert(indexPath.row)
+        } else {
+            // Placeholder for non-visible cells
+            cell.textLabel?.text = file.name
+            cell.detailTextLabel?.text = "Loading..."
+            cell.imageView?.image = UIImage(systemName: "doc")
+        }
+        
+        let loadTime = CFAbsoluteTimeGetCurrent() - startTime
+        coordinator.performanceMetrics.recordLoadTime(loadTime)
+        
+        return cell
+    }
+    
+    private func configureCellContent(_ cell: UITableViewCell, for file: MediaFile, at indexPath: IndexPath) {
         cell.textLabel?.text = file.name
         cell.textLabel?.font = .preferredFont(forTextStyle: .body)
         cell.textLabel?.adjustsFontForContentSizeCategory = true
@@ -3098,7 +3667,8 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
             cell.accessibilityTraits = .button
             cell.accessibilityHint = "Double tap to open folder"
         } else if file.isAudioFile {
-            cell.imageView?.image = UIImage(systemName: "music.note")
+            // Load album art with caching
+            loadAlbumArt(for: file, cell: cell, indexPath: indexPath)
             cell.accessoryType = .none
             cell.accessibilityLabel = "Audio file: \(file.name), \(ByteCountFormatter().string(fromByteCount: file.size))"
             cell.accessibilityTraits = .button
@@ -3115,8 +3685,63 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
             cell.accessibilityLabel = "File: \(file.name), \(ByteCountFormatter().string(fromByteCount: file.size))"
             cell.accessibilityTraits = .staticText
         }
+    }
+    
+    private func loadAlbumArt(for file: MediaFile, cell: UITableViewCell, indexPath: IndexPath) {
+        let cacheKey = "\(file.path)_thumbnail"
         
-        return cell
+        // Check local cache first
+        if let cachedImage = cellImageCache[cacheKey] {
+            cell.imageView?.image = cachedImage
+            return
+        }
+        
+        // Check global image cache
+        if let cachedImage = coordinator.imageCache.image(for: cacheKey) {
+            cell.imageView?.image = cachedImage
+            cellImageCache[cacheKey] = cachedImage
+            return
+        }
+        
+        // Set default image while loading
+        cell.imageView?.image = UIImage(systemName: "music.note")
+        
+        // Load album art in background
+        coordinator.backgroundProcessor.performFileOperation({
+            // Simulate album art extraction (in real app, this would extract from audio file metadata)
+            return self.generateThumbnailForAudioFile(file)
+        }) { [weak self, weak cell] result in
+            guard let self = self, let cell = cell else { return }
+            
+            switch result {
+            case .success(let image):
+                // Process image for thumbnail
+                self.coordinator.backgroundProcessor.processImageAsync(image, for: cacheKey) { [weak self] processedImage in
+                    guard let self = self, let processedImage = processedImage else { return }
+                    
+                    // Cache the processed image
+                    self.coordinator.imageCache.setImage(processedImage, for: cacheKey)
+                    self.cellImageCache[cacheKey] = processedImage
+                    
+                    // Update cell if still visible
+                    if let currentIndexPath = self.tableView.indexPath(for: cell),
+                       currentIndexPath == indexPath {
+                        cell.imageView?.image = processedImage
+                        cell.setNeedsLayout()
+                    }
+                }
+            case .failure:
+                // Keep default music note icon
+                break
+            }
+        }
+    }
+    
+    private func generateThumbnailForAudioFile(_ file: MediaFile) -> UIImage {
+        // In a real implementation, this would extract album art from audio file metadata
+        // For now, return a styled music note icon
+        let config = UIImage.SymbolConfiguration(pointSize: 30, weight: .medium)
+        return UIImage(systemName: "music.note", withConfiguration: config) ?? UIImage(systemName: "music.note")!
     }
     
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -3135,6 +3760,46 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
             print("📄 [MainVC] Opening text file: \(file.name)")
             showTextViewer(for: file)
         }
+    }
+    
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Update virtual scrolling manager
+        coordinator.virtualScrollManager.updateVisibleRange(for: scrollView)
+        
+        // Load cells that became visible
+        let visibleIndexPaths = tableView.indexPathsForVisibleRows ?? []
+        for indexPath in visibleIndexPaths {
+            if !loadedCells.contains(indexPath.row) {
+                // Reload this cell with full content
+                tableView.reloadRows(at: [indexPath], with: .none)
+            }
+        }
+        
+        // Clean up memory if needed
+        if coordinator.memoryManager.shouldEvictCache() {
+            cleanupOffscreenCells()
+        }
+    }
+    
+    private func cleanupOffscreenCells() {
+        let visibleRows = Set(tableView.indexPathsForVisibleRows?.map { $0.row } ?? [])
+        
+        // Remove cached images for non-visible cells
+        let keysToRemove = cellImageCache.keys.filter { key in
+            // Extract row index from cache key if possible
+            return !visibleRows.contains(where: { row in
+                key.contains("\(currentFiles[row].path)")
+            })
+        }
+        
+        for key in keysToRemove {
+            cellImageCache.removeValue(forKey: key)
+        }
+        
+        // Update loaded cells set
+        loadedCells = loadedCells.intersection(visibleRows)
+        
+        print("🧹 [MainVC] Cleaned up \(keysToRemove.count) cached images")
     }
     
     private func playFile(_ file: MediaFile) {
@@ -5449,8 +6114,9 @@ class SettingsViewController: UIViewController {
         case accessibility = 1
         case functionality = 2
         case playback = 3
-        case about = 4
-        case logs = 5
+        case performance = 4
+        case about = 5
+        case logs = 6
         
         var title: String {
             switch self {
@@ -5458,6 +6124,7 @@ class SettingsViewController: UIViewController {
             case .accessibility: return "Accessibility"
             case .functionality: return "Functionality"
             case .playback: return "Playback"
+            case .performance: return "Performance"
             case .about: return "About"
             case .logs: return "Debug Logs"
             }
@@ -5469,6 +6136,7 @@ class SettingsViewController: UIViewController {
             case .accessibility: return "Enhance accessibility features for better usability"
             case .functionality: return "Configure search, drag & drop, and file handling"
             case .playback: return "Control audio playback behavior"
+            case .performance: return "Monitor memory usage and performance metrics"
             case .about: return nil
             case .logs: return "View live test output and debug information"
             }
@@ -5559,6 +6227,37 @@ class SettingsViewController: UIViewController {
         var subtitle: String? {
             switch self {
             case .autoPlay: return "Automatically start playback when loading files"
+            }
+        }
+    }
+    
+    private enum PerformanceRow: Int, CaseIterable {
+        case memoryUsage = 0
+        case cacheSize = 1
+        case cacheHitRate = 2
+        case averageLoadTime = 3
+        case memoryEfficiency = 4
+        case clearCache = 5
+        
+        var title: String {
+            switch self {
+            case .memoryUsage: return "Memory Usage"
+            case .cacheSize: return "Cache Size"
+            case .cacheHitRate: return "Cache Hit Rate"
+            case .averageLoadTime: return "Average Load Time"
+            case .memoryEfficiency: return "Memory Efficiency"
+            case .clearCache: return "Clear Cache"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .memoryUsage: return "Current memory usage percentage"
+            case .cacheSize: return "Total size of cached data"
+            case .cacheHitRate: return "Percentage of cache hits vs misses"
+            case .averageLoadTime: return "Average time to load content"
+            case .memoryEfficiency: return "Overall memory efficiency score"
+            case .clearCache: return "Clear all cached images and data"
             }
         }
     }
@@ -5656,6 +6355,23 @@ class SettingsViewController: UIViewController {
                 self?.tableView.reloadData()
             }
             .store(in: &cancellables)
+        
+        // Setup performance metrics refresh timer
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refreshPerformanceMetrics()
+        }
+    }
+    
+    private func refreshPerformanceMetrics() {
+        guard let performanceSection = SettingsSection.allCases.firstIndex(of: .performance) else { return }
+        
+        // Only refresh if the performance section is visible
+        let visibleSections = tableView.indexPathsForVisibleRows?.map { $0.section } ?? []
+        if visibleSections.contains(performanceSection) {
+            DispatchQueue.main.async {
+                self.tableView.reloadSections(IndexSet(integer: performanceSection), with: .none)
+            }
+        }
     }
     
     @objc private func dismissSettings() {
@@ -5782,6 +6498,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return FunctionalityRow.allCases.count
         case .playback:
             return PlaybackRow.allCases.count
+        case .performance:
+            return PerformanceRow.allCases.count
         case .about:
             return AboutRow.allCases.count
         case .logs:
@@ -5811,6 +6529,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return configureFunctionalityCell(for: indexPath)
         case .playback:
             return configurePlaybackCell(for: indexPath)
+        case .performance:
+            return configurePerformanceCell(for: indexPath)
         case .about:
             return configureAboutCell(for: indexPath)
         case .logs:
@@ -5824,6 +6544,10 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         guard let settingsSection = SettingsSection(rawValue: indexPath.section) else { return }
         
         switch settingsSection {
+        case .performance:
+            if indexPath.row == PerformanceRow.clearCache.rawValue {
+                clearAllCaches()
+            }
         case .about:
             if indexPath.row == AboutRow.resetSettings.rawValue {
                 showResetConfirmation()
@@ -6044,6 +6768,90 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             }
             return cell
         }
+    }
+    
+    private func configurePerformanceCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = PerformanceRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+        cell.textLabel?.text = row.title
+        cell.detailTextLabel?.text = row.subtitle
+        
+        switch row {
+        case .memoryUsage:
+            let usage = coordinator.memoryManager.memoryUsage
+            cell.detailTextLabel?.text = String(format: "%.1f%%", usage * 100)
+            cell.detailTextLabel?.textColor = usage > 0.8 ? .systemRed : usage > 0.6 ? .systemOrange : .systemGreen
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            
+        case .cacheSize:
+            let size = coordinator.memoryManager.cacheSize
+            cell.detailTextLabel?.text = ByteCountFormatter().string(fromByteCount: size)
+            cell.detailTextLabel?.textColor = .secondaryLabel
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            
+        case .cacheHitRate:
+            let hitRate = coordinator.imageCache.cacheHitRate
+            cell.detailTextLabel?.text = String(format: "%.1f%%", hitRate * 100)
+            cell.detailTextLabel?.textColor = hitRate > 0.8 ? .systemGreen : hitRate > 0.5 ? .systemOrange : .systemRed
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            
+        case .averageLoadTime:
+            let loadTime = coordinator.performanceMetrics.averageLoadTime
+            cell.detailTextLabel?.text = String(format: "%.3fs", loadTime)
+            cell.detailTextLabel?.textColor = loadTime < 0.1 ? .systemGreen : loadTime < 0.3 ? .systemOrange : .systemRed
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            
+        case .memoryEfficiency:
+            let efficiency = coordinator.performanceMetrics.memoryEfficiency
+            cell.detailTextLabel?.text = String(format: "%.1f%%", efficiency * 100)
+            cell.detailTextLabel?.textColor = efficiency > 0.8 ? .systemGreen : efficiency > 0.6 ? .systemOrange : .systemRed
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            
+        case .clearCache:
+            cell.detailTextLabel?.text = "Tap to clear all cached data"
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemRed
+        }
+        
+        return cell
+    }
+    
+    private func clearAllCaches() {
+        let alert = UIAlertController(
+            title: "Clear All Caches",
+            message: "This will clear all cached images and data. This action cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { [weak self] _ in
+            self?.coordinator.imageCache.clearCache()
+            self?.coordinator.memoryManager.performMemoryCleanup()
+            
+            // Show confirmation
+            let confirmAlert = UIAlertController(
+                title: "Cache Cleared",
+                message: "All cached data has been cleared successfully.",
+                preferredStyle: .alert
+            )
+            confirmAlert.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(confirmAlert, animated: true)
+            
+            // Refresh the performance section
+            if let performanceSection = SettingsSection.allCases.firstIndex(of: .performance) {
+                self?.tableView.reloadSections(IndexSet(integer: performanceSection), with: .none)
+            }
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
     
     private func configureAboutCell(for indexPath: IndexPath) -> UITableViewCell {
