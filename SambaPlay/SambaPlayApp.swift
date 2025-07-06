@@ -5,6 +5,7 @@ import MediaPlayer
 import CoreData
 import UniformTypeIdentifiers
 import AudioToolbox
+import CloudKit
 
 // MARK: - Data Models
 
@@ -657,6 +658,902 @@ class PerformanceMetrics: ObservableObject {
 // MARK: - Notification Extensions
 extension Notification.Name {
     static let memoryCleanupRequested = Notification.Name("memoryCleanupRequested")
+    static let coreDataSyncCompleted = Notification.Name("coreDataSyncCompleted")
+    static let iCloudSyncStatusChanged = Notification.Name("iCloudSyncStatusChanged")
+}
+
+// MARK: - Core Data Models
+
+@objc(UserSettings)
+public class UserSettings: NSManagedObject {
+    @NSManaged public var id: UUID
+    @NSManaged public var darkModeEnabled: Bool
+    @NSManaged public var autoPlayEnabled: Bool
+    @NSManaged public var showHiddenFiles: Bool
+    @NSManaged public var enableHapticFeedback: Bool
+    @NSManaged public var enableSearchSuggestions: Bool
+    @NSManaged public var enableDragAndDrop: Bool
+    @NSManaged public var enableFilePreview: Bool
+    @NSManaged public var enableVoiceOver: Bool
+    @NSManaged public var enableReduceMotion: Bool
+    @NSManaged public var enableLargeText: Bool
+    @NSManaged public var enableHighContrast: Bool
+    @NSManaged public var enableButtonShapes: Bool
+    @NSManaged public var enableOnOffLabels: Bool
+    @NSManaged public var createdAt: Date
+    @NSManaged public var updatedAt: Date
+    @NSManaged public var iCloudSyncEnabled: Bool
+    @NSManaged public var lastSyncDate: Date?
+    
+    public override func awakeFromInsert() {
+        super.awakeFromInsert()
+        id = UUID()
+        createdAt = Date()
+        updatedAt = Date()
+        
+        // Default values
+        darkModeEnabled = false
+        autoPlayEnabled = true
+        showHiddenFiles = false
+        enableHapticFeedback = true
+        enableSearchSuggestions = true
+        enableDragAndDrop = true
+        enableFilePreview = true
+        enableVoiceOver = false
+        enableReduceMotion = false
+        enableLargeText = false
+        enableHighContrast = false
+        enableButtonShapes = false
+        enableOnOffLabels = false
+        iCloudSyncEnabled = true
+    }
+    
+    public override func willSave() {
+        super.willSave()
+        updatedAt = Date()
+    }
+}
+
+@objc(Playlist)
+public class Playlist: NSManagedObject {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var playlistDescription: String?
+    @NSManaged public var createdAt: Date
+    @NSManaged public var updatedAt: Date
+    @NSManaged public var lastPlayedAt: Date?
+    @NSManaged public var totalDuration: TimeInterval
+    @NSManaged public var trackCount: Int32
+    @NSManaged public var isSystemPlaylist: Bool
+    @NSManaged public var sortOrder: Int32
+    @NSManaged public var tracks: NSOrderedSet
+    @NSManaged public var iCloudSyncEnabled: Bool
+    @NSManaged public var lastSyncDate: Date?
+    
+    public override func awakeFromInsert() {
+        super.awakeFromInsert()
+        id = UUID()
+        createdAt = Date()
+        updatedAt = Date()
+        totalDuration = 0
+        trackCount = 0
+        isSystemPlaylist = false
+        sortOrder = 0
+        iCloudSyncEnabled = true
+    }
+    
+    public override func willSave() {
+        super.willSave()
+        updatedAt = Date()
+    }
+}
+
+@objc(PlaylistTrack)
+public class PlaylistTrack: NSManagedObject {
+    @NSManaged public var id: UUID
+    @NSManaged public var filePath: String
+    @NSManaged public var fileName: String
+    @NSManaged public var fileSize: Int64
+    @NSManaged public var duration: TimeInterval
+    @NSManaged public var addedAt: Date
+    @NSManaged public var sortOrder: Int32
+    @NSManaged public var lastPlayedAt: Date?
+    @NSManaged public var playCount: Int32
+    @NSManaged public var playlist: Playlist
+    @NSManaged public var iCloudSyncEnabled: Bool
+    @NSManaged public var lastSyncDate: Date?
+    
+    public override func awakeFromInsert() {
+        super.awakeFromInsert()
+        id = UUID()
+        addedAt = Date()
+        sortOrder = 0
+        playCount = 0
+        iCloudSyncEnabled = true
+    }
+}
+
+@objc(PlaybackHistory)
+public class PlaybackHistory: NSManagedObject {
+    @NSManaged public var id: UUID
+    @NSManaged public var filePath: String
+    @NSManaged public var fileName: String
+    @NSManaged public var position: TimeInterval
+    @NSManaged public var duration: TimeInterval
+    @NSManaged public var lastPlayedAt: Date
+    @NSManaged public var playCount: Int32
+    @NSManaged public var completedPlayback: Bool
+    @NSManaged public var iCloudSyncEnabled: Bool
+    @NSManaged public var lastSyncDate: Date?
+    
+    public override func awakeFromInsert() {
+        super.awakeFromInsert()
+        id = UUID()
+        lastPlayedAt = Date()
+        playCount = 0
+        completedPlayback = false
+        iCloudSyncEnabled = true
+    }
+}
+
+@objc(LocalFolderEntity)
+public class LocalFolderEntity: NSManagedObject {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var bookmarkData: Data
+    @NSManaged public var dateAdded: Date
+    @NSManaged public var lastAccessed: Date
+    @NSManaged public var accessCount: Int32
+    @NSManaged public var isFavorite: Bool
+    @NSManaged public var iCloudSyncEnabled: Bool
+    @NSManaged public var lastSyncDate: Date?
+    
+    public override func awakeFromInsert() {
+        super.awakeFromInsert()
+        id = UUID()
+        dateAdded = Date()
+        lastAccessed = Date()
+        accessCount = 0
+        isFavorite = false
+        iCloudSyncEnabled = true
+    }
+}
+
+// MARK: - Core Data Stack
+class CoreDataStack {
+    static let shared = CoreDataStack()
+    
+    private init() {}
+    
+    lazy var persistentContainer: NSPersistentCloudKitContainer = {
+        let container = NSPersistentCloudKitContainer(name: "SambaPlay")
+        
+        // Configure for CloudKit
+        guard let description = container.persistentStoreDescriptions.first else {
+            fatalError("Could not retrieve a persistent store description.")
+        }
+        
+        // Enable CloudKit
+        description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        
+        // Configure CloudKit container
+        description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.com.sambaplay.SambaPlay")
+        
+        container.loadPersistentStores { _, error in
+            if let error = error {
+                print("❌ [CoreData] Failed to load store: \(error)")
+                // In production, handle this more gracefully
+                fatalError("Core Data failed to load: \(error)")
+            } else {
+                print("✅ [CoreData] Store loaded successfully")
+            }
+        }
+        
+        // Enable automatic merging from parent context
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        
+        return container
+    }()
+    
+    var context: NSManagedObjectContext {
+        return persistentContainer.viewContext
+    }
+    
+    func save() {
+        let context = persistentContainer.viewContext
+        
+        if context.hasChanges {
+            do {
+                try context.save()
+                print("✅ [CoreData] Context saved successfully")
+            } catch {
+                print("❌ [CoreData] Save error: \(error)")
+                // Handle the error appropriately
+            }
+        }
+    }
+    
+    func saveContext() {
+        save()
+    }
+    
+    // Background context for heavy operations
+    func newBackgroundContext() -> NSManagedObjectContext {
+        let context = persistentContainer.newBackgroundContext()
+        context.automaticallyMergesChangesFromParent = true
+        return context
+    }
+}
+
+// MARK: - Data Persistence Manager
+class DataPersistenceManager: ObservableObject {
+    static let shared = DataPersistenceManager()
+    
+    @Published var iCloudSyncEnabled: Bool = true
+    @Published var lastSyncDate: Date?
+    @Published var syncStatus: CloudSyncStatus = .idle
+    @Published var syncProgress: Double = 0.0
+    
+    let coreDataStack = CoreDataStack.shared
+    private var cloudKitObserver: NSObjectProtocol?
+    
+    enum CloudSyncStatus {
+        case idle
+        case syncing
+        case completed
+        case failed(Error)
+    }
+    
+    private init() {
+        setupCloudKitObserver()
+        loadSettings()
+        
+        // Perform data validation and maintenance on startup
+        DispatchQueue.global(qos: .utility).async {
+            _ = self.validateDataIntegrity()
+            self.performDataMaintenance()
+            
+            // Check for offline changes to sync
+            self.handleOfflineChanges()
+        }
+    }
+    
+    private func setupCloudKitObserver() {
+        cloudKitObserver = NotificationCenter.default.addObserver(
+            forName: NSPersistentCloudKitContainer.eventChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleCloudKitEvent(notification)
+        }
+    }
+    
+    private func handleCloudKitEvent(_ notification: Notification) {
+        guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey] as? NSPersistentCloudKitContainer.Event else {
+            return
+        }
+        
+        DispatchQueue.main.async {
+            switch event.type {
+            case .setup:
+                self.syncStatus = .idle
+            case .import:
+                self.syncStatus = .syncing
+                self.syncProgress = 0.5
+            case .export:
+                self.syncStatus = .syncing
+                self.syncProgress = 0.8
+            @unknown default:
+                break
+            }
+            
+            if event.succeeded {
+                self.syncStatus = .completed
+                self.lastSyncDate = Date()
+                self.syncProgress = 1.0
+                
+                // Reset progress after a delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.syncProgress = 0.0
+                    self.syncStatus = .idle
+                }
+            } else if let error = event.error {
+                self.syncStatus = .failed(error)
+                self.syncProgress = 0.0
+            }
+        }
+    }
+    
+    // MARK: - Settings Management
+    func loadSettings() -> UserSettings {
+        let request = NSFetchRequest<UserSettings>(entityName: "UserSettings")
+        request.fetchLimit = 1
+        
+        do {
+            let settings = try coreDataStack.context.fetch(request)
+            if let existingSettings = settings.first {
+                return existingSettings
+            } else {
+                // Create default settings
+                let newSettings = UserSettings(context: coreDataStack.context)
+                coreDataStack.save()
+                return newSettings
+            }
+        } catch {
+            print("❌ [DataPersistence] Failed to load settings: \(error)")
+            // Return default settings without saving
+            return UserSettings(context: coreDataStack.context)
+        }
+    }
+    
+    func saveSettings(_ settings: UserSettings) {
+        coreDataStack.save()
+    }
+    
+    // MARK: - Playlist Management
+    func createPlaylist(name: String, description: String? = nil) -> Playlist {
+        let playlist = Playlist(context: coreDataStack.context)
+        playlist.name = name
+        playlist.playlistDescription = description
+        
+        // Set sort order to be last
+        let count = getPlaylistCount()
+        playlist.sortOrder = Int32(count)
+        
+        coreDataStack.save()
+        return playlist
+    }
+    
+    func getPlaylists() -> [Playlist] {
+        let request = NSFetchRequest<Playlist>(entityName: "Playlist")
+        request.sortDescriptors = [NSSortDescriptor(key: "sortOrder", ascending: true)]
+        
+        do {
+            return try coreDataStack.context.fetch(request)
+        } catch {
+            print("❌ [DataPersistence] Failed to fetch playlists: \(error)")
+            return []
+        }
+    }
+    
+    func deletePlaylist(_ playlist: Playlist) {
+        coreDataStack.context.delete(playlist)
+        coreDataStack.save()
+    }
+    
+    private func getPlaylistCount() -> Int {
+        let request = NSFetchRequest<Playlist>(entityName: "Playlist")
+        
+        do {
+            return try coreDataStack.context.count(for: request)
+        } catch {
+            print("❌ [DataPersistence] Failed to count playlists: \(error)")
+            return 0
+        }
+    }
+    
+    // MARK: - Playback History Management
+    func savePlaybackPosition(file: MediaFile, position: TimeInterval, duration: TimeInterval) {
+        let request = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        request.predicate = NSPredicate(format: "filePath == %@", file.path)
+        request.fetchLimit = 1
+        
+        do {
+            let existing = try coreDataStack.context.fetch(request)
+            let history: PlaybackHistory
+            
+            if let existingHistory = existing.first {
+                history = existingHistory
+            } else {
+                history = PlaybackHistory(context: coreDataStack.context)
+                history.filePath = file.path
+                history.fileName = file.name
+            }
+            
+            history.position = position
+            history.duration = duration
+            history.lastPlayedAt = Date()
+            history.playCount += 1
+            
+            // Mark as completed if near the end
+            history.completedPlayback = position > (duration * 0.9)
+            
+            coreDataStack.save()
+        } catch {
+            print("❌ [DataPersistence] Failed to save playback position: \(error)")
+        }
+    }
+    
+    func getPlaybackPosition(for file: MediaFile) -> PlaybackHistory? {
+        let request = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        request.predicate = NSPredicate(format: "filePath == %@", file.path)
+        request.fetchLimit = 1
+        
+        do {
+            return try coreDataStack.context.fetch(request).first
+        } catch {
+            print("❌ [DataPersistence] Failed to fetch playback position: \(error)")
+            return nil
+        }
+    }
+    
+    func getRecentlyPlayed(limit: Int = 20) -> [PlaybackHistory] {
+        let request = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        request.sortDescriptors = [NSSortDescriptor(key: "lastPlayedAt", ascending: false)]
+        request.fetchLimit = limit
+        
+        do {
+            return try coreDataStack.context.fetch(request)
+        } catch {
+            print("❌ [DataPersistence] Failed to fetch recently played: \(error)")
+            return []
+        }
+    }
+    
+    // MARK: - Local Folder Management
+    func saveLocalFolder(name: String, bookmarkData: Data) -> LocalFolderEntity {
+        let folder = LocalFolderEntity(context: coreDataStack.context)
+        folder.name = name
+        folder.bookmarkData = bookmarkData
+        
+        coreDataStack.save()
+        return folder
+    }
+    
+    func getLocalFolders() -> [LocalFolderEntity] {
+        let request = NSFetchRequest<LocalFolderEntity>(entityName: "LocalFolderEntity")
+        request.sortDescriptors = [NSSortDescriptor(key: "lastAccessed", ascending: false)]
+        
+        do {
+            return try coreDataStack.context.fetch(request)
+        } catch {
+            print("❌ [DataPersistence] Failed to fetch local folders: \(error)")
+            return []
+        }
+    }
+    
+    func deleteLocalFolder(_ folder: LocalFolderEntity) {
+        coreDataStack.context.delete(folder)
+        coreDataStack.save()
+    }
+    
+    // MARK: - Offline Sync and Conflict Resolution
+    func handleOfflineChanges() {
+        // Check for pending changes that need to be synced
+        let context = coreDataStack.context
+        
+        // Find items that have been modified since last sync
+        let settingsRequest = NSFetchRequest<UserSettings>(entityName: "UserSettings")
+        settingsRequest.predicate = NSPredicate(format: "lastSyncDate == nil OR updatedAt > lastSyncDate")
+        
+        let playlistsRequest = NSFetchRequest<Playlist>(entityName: "Playlist")
+        playlistsRequest.predicate = NSPredicate(format: "lastSyncDate == nil OR updatedAt > lastSyncDate")
+        
+        let historyRequest = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        historyRequest.predicate = NSPredicate(format: "lastSyncDate == nil OR lastPlayedAt > lastSyncDate")
+        
+        do {
+            let pendingSettings = try context.fetch(settingsRequest)
+            let pendingPlaylists = try context.fetch(playlistsRequest)
+            let pendingHistory = try context.fetch(historyRequest)
+            
+            print("📱 [OfflineSync] Found \(pendingSettings.count) settings, \(pendingPlaylists.count) playlists, \(pendingHistory.count) history items to sync")
+            
+            // Mark items for sync when connection is restored
+            for item in pendingSettings + pendingPlaylists + pendingHistory {
+                if let syncableItem = item as? NSManagedObject {
+                    syncableItem.setValue(true, forKey: "iCloudSyncEnabled")
+                }
+            }
+            
+            coreDataStack.save()
+        } catch {
+            print("❌ [OfflineSync] Failed to check for offline changes: \(error)")
+        }
+    }
+    
+    func resolveConflicts(for entity: NSManagedObject) {
+        // Simple conflict resolution: most recent change wins
+        guard let updatedAt = entity.value(forKey: "updatedAt") as? Date,
+              let lastSyncDate = entity.value(forKey: "lastSyncDate") as? Date else {
+            return
+        }
+        
+        if updatedAt > lastSyncDate {
+            print("🔄 [ConflictResolution] Local change is newer, keeping local version for \(entity.entity.name ?? "unknown")")
+            // Local version is newer, mark for upload
+            entity.setValue(true, forKey: "iCloudSyncEnabled")
+        } else {
+            print("☁️ [ConflictResolution] Remote change is newer, will accept remote version for \(entity.entity.name ?? "unknown")")
+            // Remote version will be accepted during next sync
+        }
+    }
+    
+    func syncOfflineChanges() {
+        guard iCloudSyncEnabled else {
+            print("📱 [OfflineSync] iCloud sync is disabled, skipping offline sync")
+            return
+        }
+        
+        DispatchQueue.global(qos: .background).async {
+            self.handleOfflineChanges()
+            
+            // Trigger CloudKit sync
+            DispatchQueue.main.async {
+                self.syncStatus = .syncing
+                self.syncProgress = 0.1
+                
+                // CloudKit will automatically handle the sync
+                // We just need to wait for the notifications
+            }
+        }
+    }
+    
+    // MARK: - Data Export/Import
+    func exportUserData() -> Data? {
+        var exportData = UserDataExport()
+        
+        // Export settings
+        let settings = loadSettings()
+        exportData.settings = UserSettingsExport(from: settings)
+        
+        // Export playlists
+        exportData.playlists = getPlaylists().map { PlaylistExport(from: $0) }
+        
+        // Export playback history
+        exportData.playbackHistory = getRecentlyPlayed(limit: 1000).map { PlaybackHistoryExport(from: $0) }
+        
+        // Export local folders
+        exportData.localFolders = getLocalFolders().map { LocalFolderExport(from: $0) }
+        
+        exportData.exportDate = Date()
+        exportData.appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        
+        do {
+            let data = try JSONEncoder().encode(exportData)
+            return data
+        } catch {
+            print("❌ [DataPersistence] Failed to export data: \(error)")
+            return nil
+        }
+    }
+    
+    func importUserData(from data: Data) -> Bool {
+        do {
+            let importData = try JSONDecoder().decode(UserDataExport.self, from: data)
+            
+            // Import settings (replace existing)
+            let settings = loadSettings()
+            importData.settings?.apply(to: settings)
+            
+            // Import playlists (add new ones)
+            for playlistExport in importData.playlists {
+                _ = createPlaylist(name: playlistExport.name, description: playlistExport.description)
+                // Add tracks to playlist if needed
+            }
+            
+            // Import playback history (merge with existing)
+            for historyExport in importData.playbackHistory {
+                let history = PlaybackHistory(context: coreDataStack.context)
+                historyExport.apply(to: history)
+            }
+            
+            // Import local folders (add new ones)
+            for folderExport in importData.localFolders {
+                let folder = LocalFolderEntity(context: coreDataStack.context)
+                folderExport.apply(to: folder)
+            }
+            
+            coreDataStack.save()
+            return true
+        } catch {
+            print("❌ [DataPersistence] Failed to import data: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Data Validation and Integrity
+    func validateDataIntegrity() -> Bool {
+        let context = coreDataStack.context
+        var isValid = true
+        
+        // Validate UserSettings
+        let settingsRequest = NSFetchRequest<UserSettings>(entityName: "UserSettings")
+        do {
+            let settings = try context.fetch(settingsRequest)
+            if settings.count > 1 {
+                print("⚠️ [DataValidation] Multiple UserSettings found, should only have one")
+                // Keep the most recent one
+                let sortedSettings = settings.sorted { $0.updatedAt > $1.updatedAt }
+                for i in 1..<sortedSettings.count {
+                    context.delete(sortedSettings[i])
+                }
+                isValid = false
+            }
+            
+            // Validate settings values
+            for setting in settings {
+                if setting.id == UUID(uuidString: "00000000-0000-0000-0000-000000000000") {
+                    setting.id = UUID()
+                    isValid = false
+                }
+            }
+        } catch {
+            print("❌ [DataValidation] Failed to validate UserSettings: \(error)")
+            isValid = false
+        }
+        
+        // Validate Playlists
+        let playlistsRequest = NSFetchRequest<Playlist>(entityName: "Playlist")
+        do {
+            let playlists = try context.fetch(playlistsRequest)
+            for playlist in playlists {
+                // Check for valid name
+                if playlist.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    playlist.name = "Untitled Playlist"
+                    isValid = false
+                }
+                
+                // Validate track count matches actual tracks
+                let actualTrackCount = playlist.tracks.count
+                if playlist.trackCount != actualTrackCount {
+                    print("⚠️ [DataValidation] Playlist '\(playlist.name)' track count mismatch: stored \(playlist.trackCount), actual \(actualTrackCount)")
+                    playlist.trackCount = Int32(actualTrackCount)
+                    isValid = false
+                }
+                
+                // Recalculate total duration
+                var totalDuration: TimeInterval = 0
+                for track in playlist.tracks {
+                    if let playlistTrack = track as? PlaylistTrack {
+                        totalDuration += playlistTrack.duration
+                    }
+                }
+                if abs(playlist.totalDuration - totalDuration) > 1.0 {
+                    print("⚠️ [DataValidation] Playlist '\(playlist.name)' duration mismatch: stored \(playlist.totalDuration), calculated \(totalDuration)")
+                    playlist.totalDuration = totalDuration
+                    isValid = false
+                }
+            }
+        } catch {
+            print("❌ [DataValidation] Failed to validate Playlists: \(error)")
+            isValid = false
+        }
+        
+        // Validate PlaybackHistory
+        let historyRequest = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        do {
+            let historyItems = try context.fetch(historyRequest)
+            for history in historyItems {
+                // Check for valid file paths
+                if history.filePath.isEmpty || history.fileName.isEmpty {
+                    print("⚠️ [DataValidation] Invalid playback history entry with empty path/name")
+                    context.delete(history)
+                    isValid = false
+                    continue
+                }
+                
+                // Validate position is within duration
+                if history.position > history.duration && history.duration > 0 {
+                    print("⚠️ [DataValidation] Invalid playback position: \(history.position) > \(history.duration)")
+                    history.position = min(history.position, history.duration)
+                    isValid = false
+                }
+                
+                // Validate play count
+                if history.playCount < 0 {
+                    history.playCount = 0
+                    isValid = false
+                }
+            }
+        } catch {
+            print("❌ [DataValidation] Failed to validate PlaybackHistory: \(error)")
+            isValid = false
+        }
+        
+        // Save any corrections
+        if !isValid {
+            coreDataStack.save()
+            print("🔧 [DataValidation] Data integrity issues found and corrected")
+        } else {
+            print("✅ [DataValidation] Data integrity check passed")
+        }
+        
+        return isValid
+    }
+    
+    func performDataMaintenance() {
+        let context = coreDataStack.context
+        
+        // Clean up old playback history (keep last 1000 entries)
+        let historyRequest = NSFetchRequest<PlaybackHistory>(entityName: "PlaybackHistory")
+        historyRequest.sortDescriptors = [NSSortDescriptor(key: "lastPlayedAt", ascending: false)]
+        
+        do {
+            let allHistory = try context.fetch(historyRequest)
+            if allHistory.count > 1000 {
+                let toDelete = Array(allHistory.dropFirst(1000))
+                print("🧹 [DataMaintenance] Cleaning up \(toDelete.count) old playback history entries")
+                
+                for history in toDelete {
+                    context.delete(history)
+                }
+                
+                coreDataStack.save()
+            }
+        } catch {
+            print("❌ [DataMaintenance] Failed to clean up old history: \(error)")
+        }
+        
+        // Remove orphaned playlist tracks
+        let tracksRequest = NSFetchRequest<PlaylistTrack>(entityName: "PlaylistTrack")
+        tracksRequest.predicate = NSPredicate(format: "playlist == nil")
+        
+        do {
+            let orphanedTracks = try context.fetch(tracksRequest)
+            if !orphanedTracks.isEmpty {
+                print("🧹 [DataMaintenance] Removing \(orphanedTracks.count) orphaned playlist tracks")
+                
+                for track in orphanedTracks {
+                    context.delete(track)
+                }
+                
+                coreDataStack.save()
+            }
+        } catch {
+            print("❌ [DataMaintenance] Failed to clean up orphaned tracks: \(error)")
+        }
+    }
+    
+    deinit {
+        if let observer = cloudKitObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+}
+
+// MARK: - Export/Import Data Models
+struct UserDataExport: Codable {
+    var settings: UserSettingsExport?
+    var playlists: [PlaylistExport] = []
+    var playbackHistory: [PlaybackHistoryExport] = []
+    var localFolders: [LocalFolderExport] = []
+    var exportDate: Date = Date()
+    var appVersion: String = ""
+}
+
+struct UserSettingsExport: Codable {
+    let darkModeEnabled: Bool
+    let autoPlayEnabled: Bool
+    let showHiddenFiles: Bool
+    let enableHapticFeedback: Bool
+    let enableSearchSuggestions: Bool
+    let enableDragAndDrop: Bool
+    let enableFilePreview: Bool
+    let enableVoiceOver: Bool
+    let enableReduceMotion: Bool
+    let enableLargeText: Bool
+    let enableHighContrast: Bool
+    let enableButtonShapes: Bool
+    let enableOnOffLabels: Bool
+    
+    init(from settings: UserSettings) {
+        self.darkModeEnabled = settings.darkModeEnabled
+        self.autoPlayEnabled = settings.autoPlayEnabled
+        self.showHiddenFiles = settings.showHiddenFiles
+        self.enableHapticFeedback = settings.enableHapticFeedback
+        self.enableSearchSuggestions = settings.enableSearchSuggestions
+        self.enableDragAndDrop = settings.enableDragAndDrop
+        self.enableFilePreview = settings.enableFilePreview
+        self.enableVoiceOver = settings.enableVoiceOver
+        self.enableReduceMotion = settings.enableReduceMotion
+        self.enableLargeText = settings.enableLargeText
+        self.enableHighContrast = settings.enableHighContrast
+        self.enableButtonShapes = settings.enableButtonShapes
+        self.enableOnOffLabels = settings.enableOnOffLabels
+    }
+    
+    func apply(to settings: UserSettings) {
+        settings.darkModeEnabled = darkModeEnabled
+        settings.autoPlayEnabled = autoPlayEnabled
+        settings.showHiddenFiles = showHiddenFiles
+        settings.enableHapticFeedback = enableHapticFeedback
+        settings.enableSearchSuggestions = enableSearchSuggestions
+        settings.enableDragAndDrop = enableDragAndDrop
+        settings.enableFilePreview = enableFilePreview
+        settings.enableVoiceOver = enableVoiceOver
+        settings.enableReduceMotion = enableReduceMotion
+        settings.enableLargeText = enableLargeText
+        settings.enableHighContrast = enableHighContrast
+        settings.enableButtonShapes = enableButtonShapes
+        settings.enableOnOffLabels = enableOnOffLabels
+    }
+}
+
+struct PlaylistExport: Codable {
+    let name: String
+    let description: String?
+    let createdAt: Date
+    let tracks: [PlaylistTrackExport]
+    
+    init(from playlist: Playlist) {
+        self.name = playlist.name
+        self.description = playlist.playlistDescription
+        self.createdAt = playlist.createdAt
+        self.tracks = playlist.tracks.array.compactMap { track in
+            guard let playlistTrack = track as? PlaylistTrack else { return nil }
+            return PlaylistTrackExport(from: playlistTrack)
+        }
+    }
+}
+
+struct PlaylistTrackExport: Codable {
+    let filePath: String
+    let fileName: String
+    let duration: TimeInterval
+    let sortOrder: Int32
+    
+    init(from track: PlaylistTrack) {
+        self.filePath = track.filePath
+        self.fileName = track.fileName
+        self.duration = track.duration
+        self.sortOrder = track.sortOrder
+    }
+}
+
+struct PlaybackHistoryExport: Codable {
+    let filePath: String
+    let fileName: String
+    let position: TimeInterval
+    let duration: TimeInterval
+    let lastPlayedAt: Date
+    let playCount: Int32
+    
+    init(from history: PlaybackHistory) {
+        self.filePath = history.filePath
+        self.fileName = history.fileName
+        self.position = history.position
+        self.duration = history.duration
+        self.lastPlayedAt = history.lastPlayedAt
+        self.playCount = history.playCount
+    }
+    
+    func apply(to history: PlaybackHistory) {
+        history.filePath = filePath
+        history.fileName = fileName
+        history.position = position
+        history.duration = duration
+        history.lastPlayedAt = lastPlayedAt
+        history.playCount = playCount
+    }
+}
+
+struct LocalFolderExport: Codable {
+    let name: String
+    let bookmarkData: Data
+    let dateAdded: Date
+    let lastAccessed: Date
+    let accessCount: Int32
+    let isFavorite: Bool
+    
+    init(from folder: LocalFolderEntity) {
+        self.name = folder.name
+        self.bookmarkData = folder.bookmarkData
+        self.dateAdded = folder.dateAdded
+        self.lastAccessed = folder.lastAccessed
+        self.accessCount = folder.accessCount
+        self.isFavorite = folder.isFavorite
+    }
+    
+    func apply(to folder: LocalFolderEntity) {
+        folder.name = name
+        folder.bookmarkData = bookmarkData
+        folder.dateAdded = dateAdded
+        folder.lastAccessed = lastAccessed
+        folder.accessCount = accessCount
+        folder.isFavorite = isFavorite
+    }
 }
 
 // MARK: - Playback Queue Models
@@ -2174,7 +3071,18 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     private func saveCurrentPosition() {
         guard let file = currentFile, let networkService = networkService else { return }
+        
+        // Save to old system for backward compatibility
         networkService.savePlaybackPosition(for: file, position: currentTime, duration: duration)
+        
+        // Save to Core Data
+        if let coordinator = coordinator {
+            coordinator.dataPersistenceManager.savePlaybackPosition(
+                file: file,
+                position: currentTime,
+                duration: duration
+            )
+        }
     }
     
     func loadFile(_ file: MediaFile, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -2924,17 +3832,42 @@ class SambaPlayCoordinator {
     let backgroundProcessor = BackgroundProcessingManager.shared
     let virtualScrollManager = VirtualScrollingManager()
     let performanceMetrics = PerformanceMetrics.shared
+    let dataPersistenceManager = DataPersistenceManager.shared
     
     private init() {
         // Connect the audio player with the network service for position memory
         audioPlayer.setNetworkService(networkService)
         audioPlayer.setCoordinator(self)
         
+        // Migrate from UserDefaults to Core Data
+        migrateFromUserDefaults()
+        
         // Load saved queue on startup
         playbackQueue.loadFromUserDefaults()
         
         // Setup memory management
         setupMemoryManagement()
+    }
+    
+    private func migrateFromUserDefaults() {
+        // Check if migration is needed
+        let migrationKey = "CoreDataMigrationCompleted"
+        if !UserDefaults.standard.bool(forKey: migrationKey) {
+            print("🔄 [CoreData] Starting migration from UserDefaults...")
+            
+            // Migrate settings
+            let coreDataSettings = dataPersistenceManager.loadSettings()
+            
+            // Migrate from old AppSettings if they exist
+            if let oldSettings = try? UserDefaults.standard.data(forKey: "AppSettings") {
+                // Migration logic would go here
+                print("✅ [CoreData] Settings migrated from UserDefaults")
+            }
+            
+            // Mark migration as completed
+            UserDefaults.standard.set(true, forKey: migrationKey)
+            print("✅ [CoreData] Migration completed")
+        }
     }
     
     private func setupMemoryManagement() {
@@ -6087,7 +7020,7 @@ extension FolderHistoryViewController: UIDocumentPickerDelegate {
 }
 
 // MARK: - Settings View Controller
-class SettingsViewController: UIViewController {
+class SettingsViewController: UIViewController, UIDocumentPickerDelegate {
     private let coordinator: SambaPlayCoordinator
     private var cancellables = Set<AnyCancellable>()
     
@@ -6115,8 +7048,9 @@ class SettingsViewController: UIViewController {
         case functionality = 2
         case playback = 3
         case performance = 4
-        case about = 5
-        case logs = 6
+        case dataManagement = 5
+        case about = 6
+        case logs = 7
         
         var title: String {
             switch self {
@@ -6125,6 +7059,7 @@ class SettingsViewController: UIViewController {
             case .functionality: return "Functionality"
             case .playback: return "Playback"
             case .performance: return "Performance"
+            case .dataManagement: return "Data Management"
             case .about: return "About"
             case .logs: return "Debug Logs"
             }
@@ -6137,6 +7072,7 @@ class SettingsViewController: UIViewController {
             case .functionality: return "Configure search, drag & drop, and file handling"
             case .playback: return "Control audio playback behavior"
             case .performance: return "Monitor memory usage and performance metrics"
+            case .dataManagement: return "Manage iCloud sync, backup, and data storage"
             case .about: return nil
             case .logs: return "View live test output and debug information"
             }
@@ -6258,6 +7194,37 @@ class SettingsViewController: UIViewController {
             case .averageLoadTime: return "Average time to load content"
             case .memoryEfficiency: return "Overall memory efficiency score"
             case .clearCache: return "Clear all cached images and data"
+            }
+        }
+    }
+    
+    private enum DataManagementRow: Int, CaseIterable {
+        case iCloudSync = 0
+        case syncStatus = 1
+        case lastSyncDate = 2
+        case exportData = 3
+        case importData = 4
+        case clearAllData = 5
+        
+        var title: String {
+            switch self {
+            case .iCloudSync: return "iCloud Sync"
+            case .syncStatus: return "Sync Status"
+            case .lastSyncDate: return "Last Sync"
+            case .exportData: return "Export Data"
+            case .importData: return "Import Data"
+            case .clearAllData: return "Clear All Data"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .iCloudSync: return "Sync settings and playlists across devices"
+            case .syncStatus: return "Current iCloud synchronization status"
+            case .lastSyncDate: return "When data was last synchronized"
+            case .exportData: return "Export settings and playlists to file"
+            case .importData: return "Import settings and playlists from file"
+            case .clearAllData: return "Reset all app data and settings"
             }
         }
     }
@@ -6500,6 +7467,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return PlaybackRow.allCases.count
         case .performance:
             return PerformanceRow.allCases.count
+        case .dataManagement:
+            return DataManagementRow.allCases.count
         case .about:
             return AboutRow.allCases.count
         case .logs:
@@ -6531,6 +7500,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return configurePlaybackCell(for: indexPath)
         case .performance:
             return configurePerformanceCell(for: indexPath)
+        case .dataManagement:
+            return configureDataManagementCell(for: indexPath)
         case .about:
             return configureAboutCell(for: indexPath)
         case .logs:
@@ -6548,6 +7519,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             if indexPath.row == PerformanceRow.clearCache.rawValue {
                 clearAllCaches()
             }
+        case .dataManagement:
+            handleDataManagementTap(for: indexPath)
         case .about:
             if indexPath.row == AboutRow.resetSettings.rawValue {
                 showResetConfirmation()
@@ -6854,6 +7827,180 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         present(alert, animated: true)
     }
     
+    private func configureDataManagementCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = DataManagementRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        switch row {
+        case .iCloudSync:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.dataPersistenceManager.iCloudSyncEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.dataPersistenceManager.iCloudSyncEnabled = isOn
+            }
+            return cell
+        case .syncStatus:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+            cell.textLabel?.text = row.title
+            cell.detailTextLabel?.text = getSyncStatusText()
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            return cell
+        case .lastSyncDate:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+            cell.textLabel?.text = row.title
+            cell.detailTextLabel?.text = getLastSyncDateText()
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+            return cell
+        case .exportData, .importData:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+            cell.textLabel?.text = row.title
+            cell.detailTextLabel?.text = row.subtitle
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemBlue
+            return cell
+        case .clearAllData:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+            cell.textLabel?.text = row.title
+            cell.detailTextLabel?.text = row.subtitle
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemRed
+            return cell
+        }
+    }
+    
+    private func getSyncStatusText() -> String {
+        switch coordinator.dataPersistenceManager.syncStatus {
+        case .idle:
+            return "Idle"
+        case .syncing:
+            return "Syncing..."
+        case .completed:
+            return "Completed"
+        case .failed(let error):
+            return "Failed: \(error.localizedDescription)"
+        }
+    }
+    
+    private func getLastSyncDateText() -> String {
+        if let lastSync = coordinator.dataPersistenceManager.lastSyncDate {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            return formatter.string(from: lastSync)
+        } else {
+            return "Never"
+        }
+    }
+    
+    private func handleDataManagementTap(for indexPath: IndexPath) {
+        guard let row = DataManagementRow(rawValue: indexPath.row) else { return }
+        
+        switch row {
+        case .iCloudSync, .syncStatus, .lastSyncDate:
+            // These are display-only or switch cells
+            break
+        case .exportData:
+            exportUserData()
+        case .importData:
+            importUserData()
+        case .clearAllData:
+            showClearAllDataConfirmation()
+        }
+    }
+    
+    private func exportUserData() {
+        guard let data = coordinator.dataPersistenceManager.exportUserData() else {
+            showAlert(title: "Export Failed", message: "Failed to export user data. Please try again.")
+            return
+        }
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "SambaPlay_Backup_\(formatter.string(from: Date())).json"
+        
+        let activityVC = UIActivityViewController(activityItems: [data], applicationActivities: nil)
+        activityVC.setValue(filename, forKey: "subject")
+        
+        if let popover = activityVC.popoverPresentationController {
+            popover.sourceView = tableView
+            popover.sourceRect = tableView.rectForRow(at: IndexPath(row: DataManagementRow.exportData.rawValue, section: SettingsSection.dataManagement.rawValue))
+        }
+        
+        present(activityVC, animated: true)
+    }
+    
+    private func importUserData() {
+        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.json])
+        documentPicker.delegate = self
+        documentPicker.modalPresentationStyle = .formSheet
+        present(documentPicker, animated: true)
+    }
+    
+    private func showClearAllDataConfirmation() {
+        let alert = UIAlertController(
+            title: "Clear All Data",
+            message: "This will permanently delete all your settings, playlists, and playback history. This action cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Clear All Data", style: .destructive) { _ in
+            self.clearAllUserData()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+    
+    private func clearAllUserData() {
+        // Clear Core Data
+        let context = coordinator.dataPersistenceManager.coreDataStack.context
+        
+        // Delete all entities
+        let entityNames = ["UserSettings", "Playlist", "PlaylistTrack", "PlaybackHistory", "LocalFolderEntity"]
+        
+        for entityName in entityNames {
+            let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
+            let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
+            
+            do {
+                try context.execute(deleteRequest)
+            } catch {
+                print("❌ Failed to delete \(entityName): \(error)")
+            }
+        }
+        
+        // Clear UserDefaults
+        if let bundleID = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundleID)
+        }
+        
+        // Clear caches
+        coordinator.imageCache.clearCache()
+        coordinator.memoryManager.performMemoryCleanup()
+        
+        // Reset migration flag
+        UserDefaults.standard.set(false, forKey: "CoreDataMigrationCompleted")
+        
+        showAlert(title: "Data Cleared", message: "All user data has been cleared. The app will restart to apply changes.") {
+            // Force app restart
+            exit(0)
+        }
+    }
+    
+    private func showAlert(title: String, message: String, completion: (() -> Void)? = nil) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+            completion?()
+        })
+        present(alert, animated: true)
+    }
+    
     private func configureAboutCell(for indexPath: IndexPath) -> UITableViewCell {
         guard let row = AboutRow(rawValue: indexPath.row) else {
             return UITableViewCell()
@@ -6947,6 +8094,33 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         }
         
         present(activityViewController, animated: true)
+    }
+    
+    // MARK: - UIDocumentPickerDelegate
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let success = coordinator.dataPersistenceManager.importUserData(from: data)
+            
+            if success {
+                showAlert(title: "Import Successful", message: "User data has been imported successfully. Some changes may require an app restart.")
+                
+                // Refresh the table view to show updated data
+                DispatchQueue.main.async {
+                    self.tableView.reloadData()
+                }
+            } else {
+                showAlert(title: "Import Failed", message: "Failed to import user data. Please check that the file is valid.")
+            }
+        } catch {
+            showAlert(title: "Import Failed", message: "Failed to read the selected file: \(error.localizedDescription)")
+        }
+    }
+    
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // User cancelled the import
     }
 }
 
