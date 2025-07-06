@@ -4830,7 +4830,7 @@ class SettingsViewController: UIViewController {
         
         var subtitle: String? {
             switch self {
-            case .version: return "SambaPlay v0.32.0"
+            case .version: return "SambaPlay v0.32.1"
             case .resetSettings: return "Restore default settings"
             case .runTests: return "Run comprehensive test suite"
             }
