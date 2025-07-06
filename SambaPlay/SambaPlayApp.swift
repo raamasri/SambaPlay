@@ -98,11 +98,24 @@ struct MediaFile: Identifiable, Hashable {
     }
 }
 
-enum NetworkConnectionState {
+enum NetworkConnectionState: Equatable {
     case disconnected
     case connecting
     case connected
     case error(String)
+    
+    static func == (lhs: NetworkConnectionState, rhs: NetworkConnectionState) -> Bool {
+        switch (lhs, rhs) {
+        case (.disconnected, .disconnected),
+             (.connecting, .connecting),
+             (.connected, .connected):
+            return true
+        case (.error(let lhsMessage), .error(let rhsMessage)):
+            return lhsMessage == rhsMessage
+        default:
+            return false
+        }
+    }
 }
 
 enum AudioPlayerState: Equatable {
@@ -441,7 +454,7 @@ struct RecentSource: Identifiable, Codable {
 }
 
 // MARK: - Samba Server Model
-class SambaServer {
+class SambaServer: Codable {
     let id: UUID
     var name: String
     var host: String
@@ -460,6 +473,31 @@ class SambaServer {
     
     // Static UUID for demo server to prevent duplicates
     static let demoServerID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    
+    // MARK: - Codable
+    private enum CodingKeys: String, CodingKey {
+        case id, name, host, port, username, password
+    }
+    
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decode(Int16.self, forKey: .port)
+        username = try container.decodeIfPresent(String.self, forKey: .username)
+        password = try container.decodeIfPresent(String.self, forKey: .password)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(host, forKey: .host)
+        try container.encode(port, forKey: .port)
+        try container.encodeIfPresent(username, forKey: .username)
+        try container.encodeIfPresent(password, forKey: .password)
+    }
 }
 
 // MARK: - Enhanced Network Service
@@ -4830,7 +4868,7 @@ class SettingsViewController: UIViewController {
         
         var subtitle: String? {
             switch self {
-            case .version: return "SambaPlay v0.32.1"
+            case .version: return "SambaPlay v0.33.0"
             case .resetSettings: return "Restore default settings"
             case .runTests: return "Run comprehensive test suite"
             }
