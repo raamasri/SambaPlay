@@ -54,14 +54,24 @@ enum AudioFormat: String, CaseIterable {
     }
 }
 
-struct MediaFile: Identifiable, Hashable {
-    let id = UUID()
+struct MediaFile: Identifiable, Hashable, Codable {
+    let id: UUID
     let name: String
     let path: String
     let size: Int64
     let modificationDate: Date
     let isDirectory: Bool
     let fileExtension: String?
+    
+    init(name: String, path: String, size: Int64, modificationDate: Date, isDirectory: Bool, fileExtension: String? = nil) {
+        self.id = UUID()
+        self.name = name
+        self.path = path
+        self.size = size
+        self.modificationDate = modificationDate
+        self.isDirectory = isDirectory
+        self.fileExtension = fileExtension
+    }
     
     var isAudioFile: Bool {
         guard let ext = fileExtension?.lowercased() else { return false }
@@ -195,6 +205,376 @@ struct PlaybackPosition: Codable {
     var progressPercentage: Double {
         guard duration > 0 else { return 0 }
         return (position / duration) * 100
+    }
+}
+
+// MARK: - Playback Queue Models
+enum PlaybackMode: String, CaseIterable, Codable {
+    case normal = "normal"
+    case repeatOne = "repeatOne"
+    case repeatAll = "repeatAll"
+    case shuffle = "shuffle"
+    
+    var displayName: String {
+        switch self {
+        case .normal: return "Normal"
+        case .repeatOne: return "Repeat One"
+        case .repeatAll: return "Repeat All"
+        case .shuffle: return "Shuffle"
+        }
+    }
+    
+    var systemImage: String {
+        switch self {
+        case .normal: return "arrow.right"
+        case .repeatOne: return "repeat.1"
+        case .repeatAll: return "repeat"
+        case .shuffle: return "shuffle"
+        }
+    }
+    
+    var accessibilityLabel: String {
+        switch self {
+        case .normal: return "Normal playback mode"
+        case .repeatOne: return "Repeat current track"
+        case .repeatAll: return "Repeat all tracks"
+        case .shuffle: return "Shuffle playback"
+        }
+    }
+}
+
+class PlaybackQueue: ObservableObject {
+    @Published var tracks: [MediaFile] = []
+    @Published var currentIndex: Int = 0
+    @Published var playbackMode: PlaybackMode = .normal
+    @Published var shuffledIndices: [Int] = []
+    @Published var currentShuffleIndex: Int = 0
+    
+    var currentTrack: MediaFile? {
+        guard !tracks.isEmpty else { return nil }
+        
+        if playbackMode == .shuffle && !shuffledIndices.isEmpty {
+            let shuffleIndex = min(currentShuffleIndex, shuffledIndices.count - 1)
+            let trackIndex = shuffledIndices[shuffleIndex]
+            return trackIndex < tracks.count ? tracks[trackIndex] : nil
+        } else {
+            return currentIndex < tracks.count ? tracks[currentIndex] : nil
+        }
+    }
+    
+    var hasNext: Bool {
+        guard !tracks.isEmpty else { return false }
+        
+        switch playbackMode {
+        case .normal:
+            return currentIndex < tracks.count - 1
+        case .repeatOne, .repeatAll:
+            return true
+        case .shuffle:
+            return currentShuffleIndex < shuffledIndices.count - 1 || playbackMode == .repeatAll
+        }
+    }
+    
+    var hasPrevious: Bool {
+        guard !tracks.isEmpty else { return false }
+        
+        switch playbackMode {
+        case .normal:
+            return currentIndex > 0
+        case .repeatOne, .repeatAll:
+            return true
+        case .shuffle:
+            return currentShuffleIndex > 0 || playbackMode == .repeatAll
+        }
+    }
+    
+    var nextTrack: MediaFile? {
+        guard !tracks.isEmpty else { return nil }
+        
+        switch playbackMode {
+        case .normal:
+            let nextIndex = currentIndex + 1
+            return nextIndex < tracks.count ? tracks[nextIndex] : nil
+        case .repeatOne:
+            return currentTrack
+        case .repeatAll:
+            let nextIndex = (currentIndex + 1) % tracks.count
+            return tracks[nextIndex]
+        case .shuffle:
+            if !shuffledIndices.isEmpty {
+                let nextShuffleIndex = currentShuffleIndex + 1
+                if nextShuffleIndex < shuffledIndices.count {
+                    let trackIndex = shuffledIndices[nextShuffleIndex]
+                    return trackIndex < tracks.count ? tracks[trackIndex] : nil
+                } else if playbackMode == .repeatAll {
+                    let trackIndex = shuffledIndices[0]
+                    return trackIndex < tracks.count ? tracks[trackIndex] : nil
+                }
+            }
+            return nil
+        }
+    }
+    
+    var previousTrack: MediaFile? {
+        guard !tracks.isEmpty else { return nil }
+        
+        switch playbackMode {
+        case .normal:
+            let prevIndex = currentIndex - 1
+            return prevIndex >= 0 ? tracks[prevIndex] : nil
+        case .repeatOne:
+            return currentTrack
+        case .repeatAll:
+            let prevIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : tracks.count - 1
+            return tracks[prevIndex]
+        case .shuffle:
+            if !shuffledIndices.isEmpty {
+                let prevShuffleIndex = currentShuffleIndex - 1
+                if prevShuffleIndex >= 0 {
+                    let trackIndex = shuffledIndices[prevShuffleIndex]
+                    return trackIndex < tracks.count ? tracks[trackIndex] : nil
+                } else if playbackMode == .repeatAll {
+                    let trackIndex = shuffledIndices[shuffledIndices.count - 1]
+                    return trackIndex < tracks.count ? tracks[trackIndex] : nil
+                }
+            }
+            return nil
+        }
+    }
+    
+    // MARK: - Queue Management
+    func addTrack(_ track: MediaFile) {
+        tracks.append(track)
+        updateShuffleIndices()
+    }
+    
+    func addTracks(_ newTracks: [MediaFile]) {
+        tracks.append(contentsOf: newTracks)
+        updateShuffleIndices()
+    }
+    
+    func insertTrack(_ track: MediaFile, at index: Int) {
+        let insertIndex = min(max(0, index), tracks.count)
+        tracks.insert(track, at: insertIndex)
+        
+        // Adjust current index if needed
+        if insertIndex <= currentIndex {
+            currentIndex += 1
+        }
+        
+        updateShuffleIndices()
+    }
+    
+    func removeTrack(at index: Int) {
+        guard index >= 0 && index < tracks.count else { return }
+        
+        tracks.remove(at: index)
+        
+        // Adjust current index
+        if index < currentIndex {
+            currentIndex -= 1
+        } else if index == currentIndex && currentIndex >= tracks.count {
+            currentIndex = max(0, tracks.count - 1)
+        }
+        
+        updateShuffleIndices()
+    }
+    
+    func moveTrack(from sourceIndex: Int, to destinationIndex: Int) {
+        guard sourceIndex >= 0 && sourceIndex < tracks.count &&
+              destinationIndex >= 0 && destinationIndex < tracks.count else { return }
+        
+        let track = tracks.remove(at: sourceIndex)
+        tracks.insert(track, at: destinationIndex)
+        
+        // Adjust current index
+        if sourceIndex == currentIndex {
+            currentIndex = destinationIndex
+        } else if sourceIndex < currentIndex && destinationIndex >= currentIndex {
+            currentIndex -= 1
+        } else if sourceIndex > currentIndex && destinationIndex <= currentIndex {
+            currentIndex += 1
+        }
+        
+        updateShuffleIndices()
+    }
+    
+    func clearQueue() {
+        tracks.removeAll()
+        currentIndex = 0
+        shuffledIndices.removeAll()
+        currentShuffleIndex = 0
+    }
+    
+    func playTrack(at index: Int) {
+        guard index >= 0 && index < tracks.count else { return }
+        
+        if playbackMode == .shuffle {
+            // Find the shuffle index for this track
+            if let shuffleIndex = shuffledIndices.firstIndex(of: index) {
+                currentShuffleIndex = shuffleIndex
+            }
+        } else {
+            currentIndex = index
+        }
+    }
+    
+    // MARK: - Playback Mode Management
+    func setPlaybackMode(_ mode: PlaybackMode) {
+        playbackMode = mode
+        
+        if mode == .shuffle {
+            generateShuffleOrder()
+        }
+    }
+    
+    func togglePlaybackMode() {
+        switch playbackMode {
+        case .normal:
+            setPlaybackMode(.repeatAll)
+        case .repeatAll:
+            setPlaybackMode(.repeatOne)
+        case .repeatOne:
+            setPlaybackMode(.normal)
+        case .shuffle:
+            setPlaybackMode(.normal)
+        }
+    }
+    
+    func toggleShuffle() {
+        if playbackMode == .shuffle {
+            setPlaybackMode(.normal)
+        } else {
+            setPlaybackMode(.shuffle)
+        }
+    }
+    
+    // MARK: - Navigation
+    func advanceToNext() -> MediaFile? {
+        guard !tracks.isEmpty else { return nil }
+        
+        switch playbackMode {
+        case .normal:
+            if currentIndex < tracks.count - 1 {
+                currentIndex += 1
+                return tracks[currentIndex]
+            }
+        case .repeatOne:
+            return currentTrack
+        case .repeatAll:
+            currentIndex = (currentIndex + 1) % tracks.count
+            return tracks[currentIndex]
+        case .shuffle:
+            if currentShuffleIndex < shuffledIndices.count - 1 {
+                currentShuffleIndex += 1
+            } else {
+                // Generate new shuffle order for repeat all
+                generateShuffleOrder()
+                currentShuffleIndex = 0
+            }
+            
+            if !shuffledIndices.isEmpty {
+                let trackIndex = shuffledIndices[currentShuffleIndex]
+                if trackIndex < tracks.count {
+                    return tracks[trackIndex]
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    func goToPrevious() -> MediaFile? {
+        guard !tracks.isEmpty else { return nil }
+        
+        switch playbackMode {
+        case .normal:
+            if currentIndex > 0 {
+                currentIndex -= 1
+                return tracks[currentIndex]
+            }
+        case .repeatOne:
+            return currentTrack
+        case .repeatAll:
+            currentIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : tracks.count - 1
+            return tracks[currentIndex]
+        case .shuffle:
+            if currentShuffleIndex > 0 {
+                currentShuffleIndex -= 1
+            } else {
+                currentShuffleIndex = shuffledIndices.count - 1
+            }
+            
+            if !shuffledIndices.isEmpty && currentShuffleIndex < shuffledIndices.count {
+                let trackIndex = shuffledIndices[currentShuffleIndex]
+                if trackIndex < tracks.count {
+                    return tracks[trackIndex]
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - Shuffle Management
+    private func generateShuffleOrder() {
+        shuffledIndices = Array(0..<tracks.count).shuffled()
+        
+        // Ensure current track stays as first in shuffle if we have a current track
+        if currentIndex < tracks.count && !shuffledIndices.isEmpty {
+            if let currentTrackShuffleIndex = shuffledIndices.firstIndex(of: currentIndex) {
+                shuffledIndices.swapAt(0, currentTrackShuffleIndex)
+                currentShuffleIndex = 0
+            }
+        }
+    }
+    
+    private func updateShuffleIndices() {
+        if playbackMode == .shuffle {
+            generateShuffleOrder()
+        }
+    }
+    
+    // MARK: - Persistence
+    func saveToUserDefaults() {
+        let encoder = JSONEncoder()
+        
+        if let tracksData = try? encoder.encode(tracks) {
+            UserDefaults.standard.set(tracksData, forKey: "playbackQueue_tracks")
+        }
+        
+        UserDefaults.standard.set(currentIndex, forKey: "playbackQueue_currentIndex")
+        UserDefaults.standard.set(playbackMode.rawValue, forKey: "playbackQueue_mode")
+        UserDefaults.standard.set(shuffledIndices, forKey: "playbackQueue_shuffledIndices")
+        UserDefaults.standard.set(currentShuffleIndex, forKey: "playbackQueue_currentShuffleIndex")
+    }
+    
+    func loadFromUserDefaults() {
+        let decoder = JSONDecoder()
+        
+        if let tracksData = UserDefaults.standard.data(forKey: "playbackQueue_tracks"),
+           let savedTracks = try? decoder.decode([MediaFile].self, from: tracksData) {
+            tracks = savedTracks
+        }
+        
+        currentIndex = UserDefaults.standard.integer(forKey: "playbackQueue_currentIndex")
+        
+        if let modeString = UserDefaults.standard.string(forKey: "playbackQueue_mode"),
+           let mode = PlaybackMode(rawValue: modeString) {
+            playbackMode = mode
+        }
+        
+        shuffledIndices = UserDefaults.standard.array(forKey: "playbackQueue_shuffledIndices") as? [Int] ?? []
+        currentShuffleIndex = UserDefaults.standard.integer(forKey: "playbackQueue_currentShuffleIndex")
+        
+        // Validate indices
+        if currentIndex >= tracks.count {
+            currentIndex = max(0, tracks.count - 1)
+        }
+        
+        if currentShuffleIndex >= shuffledIndices.count {
+            currentShuffleIndex = max(0, shuffledIndices.count - 1)
+        }
     }
 }
 
@@ -1308,7 +1688,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             if let file = currentFile {
                 networkService?.clearSavedPosition(for: file)
             }
-            stop()
+            
+            // Handle track completion with queue advancement
+            handleTrackCompletion()
         }
     }
     
@@ -1896,6 +2278,89 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         
         print("✅ [AudioPlayer] Position restored to \(String(format: "%.2f", position))s")
     }
+    
+    // MARK: - Queue Integration
+    private func handleTrackCompletion() {
+        print("🎵 [AudioPlayer] Handling track completion")
+        
+        guard let coordinator = coordinator else {
+            print("⚠️ [AudioPlayer] No coordinator available for queue advancement")
+            stop()
+            return
+        }
+        
+        // Check if there's a next track in the queue
+        if let nextTrack = coordinator.playbackQueue.advanceToNext() {
+            print("🎵 [AudioPlayer] Advancing to next track: \(nextTrack.name)")
+            
+            // Load and play the next track
+            loadFile(nextTrack) { [weak self] result in
+                switch result {
+                case .success:
+                    print("✅ [AudioPlayer] Next track loaded successfully")
+                    self?.play()
+                    
+                    // Save queue state
+                    coordinator.playbackQueue.saveToUserDefaults()
+                    
+                case .failure(let error):
+                    print("❌ [AudioPlayer] Failed to load next track: \(error.localizedDescription)")
+                    self?.stop()
+                }
+            }
+        } else {
+            print("🏁 [AudioPlayer] No more tracks in queue, stopping playback")
+            stop()
+        }
+    }
+    
+    func playNext() {
+        guard let coordinator = coordinator else { return }
+        
+        if let nextTrack = coordinator.playbackQueue.advanceToNext() {
+            print("⏭️ [AudioPlayer] Manually skipping to next track: \(nextTrack.name)")
+            
+            loadFile(nextTrack) { [weak self] result in
+                switch result {
+                case .success:
+                    self?.play()
+                    coordinator.playbackQueue.saveToUserDefaults()
+                case .failure(let error):
+                    print("❌ [AudioPlayer] Failed to load next track: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            print("⚠️ [AudioPlayer] No next track available")
+        }
+    }
+    
+    func playPrevious() {
+        guard let coordinator = coordinator else { return }
+        
+        // If we're more than 3 seconds into the track, restart current track
+        if currentTime > 3.0 {
+            print("🔄 [AudioPlayer] Restarting current track")
+            seek(to: 0)
+            return
+        }
+        
+        if let previousTrack = coordinator.playbackQueue.goToPrevious() {
+            print("⏮️ [AudioPlayer] Going to previous track: \(previousTrack.name)")
+            
+            loadFile(previousTrack) { [weak self] result in
+                switch result {
+                case .success:
+                    self?.play()
+                    coordinator.playbackQueue.saveToUserDefaults()
+                case .failure(let error):
+                    print("❌ [AudioPlayer] Failed to load previous track: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            print("🔄 [AudioPlayer] No previous track, restarting current track")
+            seek(to: 0)
+        }
+    }
 }
 
 // MARK: - URLSession Download Delegate
@@ -2002,11 +2467,15 @@ class SambaPlayCoordinator {
     let networkService = SimpleNetworkService()
     let audioPlayer = SimpleAudioPlayer()
     let settings = AppSettings.shared
+    let playbackQueue = PlaybackQueue()
     
     private init() {
         // Connect the audio player with the network service for position memory
         audioPlayer.setNetworkService(networkService)
         audioPlayer.setCoordinator(self)
+        
+        // Load saved queue on startup
+        playbackQueue.loadFromUserDefaults()
     }
     
     func createMainViewController() -> UIViewController {
@@ -2670,6 +3139,12 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     
     private func playFile(_ file: MediaFile) {
         print("🎵 [MainVC] Loading file for playback: \(file.name)")
+        
+        // Clear current queue and add this file
+        coordinator.playbackQueue.clearQueue()
+        coordinator.playbackQueue.addTrack(file)
+        coordinator.playbackQueue.saveToUserDefaults()
+        
         coordinator.audioPlayer.loadFile(file) { [weak self] result in
             switch result {
             case .success:
@@ -2707,6 +3182,72 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
         let textViewerVC = TextViewerViewController(file: file, networkService: coordinator.networkService)
         let nav = UINavigationController(rootViewController: textViewerVC)
         present(nav, animated: true)
+    }
+    
+    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        let file = currentFiles[indexPath.row]
+        
+        // Only show context menu for audio files
+        guard file.isAudioFile else { return nil }
+        
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+            let playAction = UIAction(
+                title: "Play Now",
+                image: UIImage(systemName: "play.fill"),
+                attributes: []
+            ) { [weak self] _ in
+                self?.playFile(file)
+            }
+            
+            let addToQueueAction = UIAction(
+                title: "Add to Queue",
+                image: UIImage(systemName: "plus"),
+                attributes: []
+            ) { [weak self] _ in
+                self?.coordinator.playbackQueue.addTrack(file)
+                self?.coordinator.playbackQueue.saveToUserDefaults()
+                
+                // Show confirmation with haptic feedback
+                if self?.coordinator.settings.isHapticsEnabled == true {
+                    let generator = UIImpactFeedbackGenerator(style: .light)
+                    generator.impactOccurred()
+                }
+                
+                let alert = UIAlertController(
+                    title: "Added to Queue",
+                    message: "\(file.name) has been added to the queue",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self?.present(alert, animated: true)
+            }
+            
+            let playNextAction = UIAction(
+                title: "Play Next",
+                image: UIImage(systemName: "text.line.first.and.arrowtriangle.forward"),
+                attributes: []
+            ) { [weak self] _ in
+                let insertIndex = (self?.coordinator.playbackQueue.currentIndex ?? -1) + 1
+                self?.coordinator.playbackQueue.insertTrack(file, at: insertIndex)
+                self?.coordinator.playbackQueue.saveToUserDefaults()
+                
+                // Show confirmation with haptic feedback
+                if self?.coordinator.settings.isHapticsEnabled == true {
+                    let generator = UIImpactFeedbackGenerator(style: .medium)
+                    generator.impactOccurred()
+                }
+                
+                let alert = UIAlertController(
+                    title: "Added to Queue",
+                    message: "\(file.name) will play next",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self?.present(alert, animated: true)
+            }
+            
+            return UIMenu(title: file.name, children: [playAction, playNextAction, addToQueueAction])
+        }
     }
 }
 
@@ -3206,10 +3747,21 @@ class SimpleNowPlayingViewController: UIViewController {
     }()
     
     // Media Control Buttons
+    private lazy var previousTrackButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "backward.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(previousTrackTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Previous track"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to go to previous track"
+        return button
+    }()
+    
     private lazy var skipBackButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
+        button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(skipBackTapped), for: .touchUpInside)
         button.accessibilityLabel = "Skip back 15 seconds"
         button.accessibilityTraits = .button
@@ -3231,7 +3783,7 @@ class SimpleNowPlayingViewController: UIViewController {
     private lazy var skipForwardButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)), for: .normal)
+        button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(skipForwardTapped), for: .touchUpInside)
         button.accessibilityLabel = "Skip forward 30 seconds"
         button.accessibilityTraits = .button
@@ -3239,13 +3791,56 @@ class SimpleNowPlayingViewController: UIViewController {
         return button
     }()
     
+    private lazy var nextTrackButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "forward.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(nextTrackTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Next track"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to go to next track"
+        return button
+    }()
+    
     private lazy var controlsStackView: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [skipBackButton, playPauseButton, skipForwardButton])
+        let stack = UIStackView(arrangedSubviews: [previousTrackButton, skipBackButton, playPauseButton, skipForwardButton, nextTrackButton])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.distribution = .equalSpacing
         stack.alignment = .center
-        stack.spacing = 40
+        stack.spacing = 16
+        return stack
+    }()
+    
+    private lazy var shuffleButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "shuffle", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(shuffleTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Shuffle"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to toggle shuffle mode"
+        return button
+    }()
+    
+    private lazy var repeatButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "repeat", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(repeatTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Repeat"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to toggle repeat mode"
+        return button
+    }()
+    
+    private lazy var playbackModeStackView: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [shuffleButton, repeatButton])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.distribution = .equalSpacing
+        stack.alignment = .center
+        stack.spacing = 24
         return stack
     }()
     
@@ -3255,6 +3850,27 @@ class SimpleNowPlayingViewController: UIViewController {
         button.setImage(UIImage(systemName: "slider.horizontal.3", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(showSettings), for: .touchUpInside)
         return button
+    }()
+    
+    private lazy var queueButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "list.bullet", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(showQueue), for: .touchUpInside)
+        button.accessibilityLabel = "Show queue"
+        button.accessibilityTraits = .button
+        button.accessibilityHint = "Double tap to view and manage playback queue"
+        return button
+    }()
+    
+    private lazy var topButtonsStackView: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [queueButton, settingsButton])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.distribution = .equalSpacing
+        stack.alignment = .center
+        stack.spacing = 16
+        return stack
     }()
     
     private lazy var subtitleTextView: UITextView = {
@@ -3300,7 +3916,7 @@ class SimpleNowPlayingViewController: UIViewController {
         view.backgroundColor = .systemBackground
         
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissViewController))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: settingsButton)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: topButtonsStackView)
         
         view.addSubview(titleLabel)
         view.addSubview(audioFormatLabel)
@@ -3309,6 +3925,7 @@ class SimpleNowPlayingViewController: UIViewController {
         view.addSubview(speedPitchContainer)
         speedPitchContainer.addSubview(speedPitchStackView)
         view.addSubview(progressSlider)
+        view.addSubview(playbackModeStackView)
         view.addSubview(controlsStackView)
         view.addSubview(subtitleHeaderLabel)
         view.addSubview(subtitleTextView)
@@ -3344,9 +3961,13 @@ class SimpleNowPlayingViewController: UIViewController {
             progressSlider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             progressSlider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             
-            controlsStackView.topAnchor.constraint(equalTo: progressSlider.bottomAnchor, constant: 32),
+            playbackModeStackView.topAnchor.constraint(equalTo: progressSlider.bottomAnchor, constant: 20),
+            playbackModeStackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            playbackModeStackView.heightAnchor.constraint(equalToConstant: 36),
+            
+            controlsStackView.topAnchor.constraint(equalTo: playbackModeStackView.bottomAnchor, constant: 20),
             controlsStackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            controlsStackView.widthAnchor.constraint(equalToConstant: 200),
+            controlsStackView.widthAnchor.constraint(equalToConstant: 280),
             controlsStackView.heightAnchor.constraint(equalToConstant: 60),
             
             subtitleHeaderLabel.topAnchor.constraint(equalTo: controlsStackView.bottomAnchor, constant: 32),
@@ -3409,6 +4030,13 @@ class SimpleNowPlayingViewController: UIViewController {
                 self?.showPositionRestoredIndicator(hasRestored)
             }
             .store(in: &cancellables)
+        
+        coordinator.playbackQueue.$playbackMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updatePlaybackModeButtons()
+            }
+            .store(in: &cancellables)
     }
     
     private func updateUI() {
@@ -3419,6 +4047,7 @@ class SimpleNowPlayingViewController: UIViewController {
         updatePitchIndicator(coordinator.audioPlayer.pitch)
         subtitleTextView.text = coordinator.audioPlayer.subtitle ?? "No subtitle available"
         showPositionRestoredIndicator(coordinator.audioPlayer.hasRestoredPosition)
+        updatePlaybackModeButtons()
     }
     
     private func showPositionRestoredIndicator(_ hasRestored: Bool) {
@@ -3579,6 +4208,87 @@ class SimpleNowPlayingViewController: UIViewController {
         let newTime = min(duration, currentTime + 30.0)
         print("⏩ [MainVC] Skip forward 30s: \(String(format: "%.2f", currentTime))s -> \(String(format: "%.2f", newTime))s")
         coordinator.audioPlayer.seek(to: newTime)
+    }
+    
+    @objc private func previousTrackTapped() {
+        print("⏮️ [NowPlaying] Previous track button tapped")
+        coordinator.audioPlayer.playPrevious()
+        
+        // Haptic feedback
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .medium)
+            generator.impactOccurred()
+        }
+    }
+    
+    @objc private func nextTrackTapped() {
+        print("⏭️ [NowPlaying] Next track button tapped")
+        coordinator.audioPlayer.playNext()
+        
+        // Haptic feedback
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .medium)
+            generator.impactOccurred()
+        }
+    }
+    
+    @objc private func shuffleTapped() {
+        print("🔀 [NowPlaying] Shuffle button tapped")
+        coordinator.playbackQueue.toggleShuffle()
+        updatePlaybackModeButtons()
+        
+        // Haptic feedback
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred()
+        }
+    }
+    
+    @objc private func repeatTapped() {
+        print("🔁 [NowPlaying] Repeat button tapped")
+        coordinator.playbackQueue.togglePlaybackMode()
+        updatePlaybackModeButtons()
+        
+        // Haptic feedback
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred()
+        }
+    }
+    
+    @objc private func showQueue() {
+        print("📋 [NowPlaying] Queue button tapped")
+        let queueVC = QueueViewController(coordinator: coordinator)
+        let nav = UINavigationController(rootViewController: queueVC)
+        present(nav, animated: true)
+    }
+    
+    private func updatePlaybackModeButtons() {
+        let mode = coordinator.playbackQueue.playbackMode
+        
+        // Update shuffle button
+        let shuffleColor: UIColor = mode == .shuffle ? .systemOrange : .label
+        shuffleButton.tintColor = shuffleColor
+        shuffleButton.accessibilityValue = mode == .shuffle ? "On" : "Off"
+        
+        // Update repeat button
+        let repeatColor: UIColor = (mode == .repeatAll || mode == .repeatOne) ? .systemOrange : .label
+        repeatButton.tintColor = repeatColor
+        
+        switch mode {
+        case .normal:
+            repeatButton.setImage(UIImage(systemName: "repeat", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+            repeatButton.accessibilityValue = "Off"
+        case .repeatAll:
+            repeatButton.setImage(UIImage(systemName: "repeat", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+            repeatButton.accessibilityValue = "Repeat all"
+        case .repeatOne:
+            repeatButton.setImage(UIImage(systemName: "repeat.1", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+            repeatButton.accessibilityValue = "Repeat one"
+        case .shuffle:
+            repeatButton.setImage(UIImage(systemName: "repeat", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+            repeatButton.accessibilityValue = "Off"
+        }
     }
     
     @objc private func showSettings() {
@@ -5793,6 +6503,308 @@ class LogTableViewCell: UITableViewCell {
         case .success:
             levelLabel.backgroundColor = .systemGreen
             levelLabel.textColor = .white
+        }
+    }
+}
+
+// MARK: - Queue View Controller
+class QueueViewController: UIViewController {
+    private let coordinator: SambaPlayCoordinator
+    private var cancellables = Set<AnyCancellable>()
+    
+    private lazy var tableView: UITableView = {
+        let table = UITableView(frame: .zero, style: .insetGrouped)
+        table.translatesAutoresizingMaskIntoConstraints = false
+        table.delegate = self
+        table.dataSource = self
+        table.register(QueueTableViewCell.self, forCellReuseIdentifier: "QueueCell")
+        table.dragInteractionEnabled = true
+        table.dragDelegate = self
+        table.dropDelegate = self
+        return table
+    }()
+    
+    private lazy var emptyStateView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        
+        let imageView = UIImageView(image: UIImage(systemName: "music.note.list"))
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.tintColor = .systemGray3
+        imageView.contentMode = .scaleAspectFit
+        
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = "Queue is Empty"
+        titleLabel.font = .systemFont(ofSize: 24, weight: .semibold)
+        titleLabel.textColor = .systemGray2
+        titleLabel.textAlignment = .center
+        
+        let subtitleLabel = UILabel()
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.text = "Add songs to start building your queue"
+        subtitleLabel.font = .systemFont(ofSize: 16, weight: .medium)
+        subtitleLabel.textColor = .systemGray3
+        subtitleLabel.textAlignment = .center
+        subtitleLabel.numberOfLines = 0
+        
+        view.addSubview(imageView)
+        view.addSubview(titleLabel)
+        view.addSubview(subtitleLabel)
+        
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -40),
+            imageView.widthAnchor.constraint(equalToConstant: 80),
+            imageView.heightAnchor.constraint(equalToConstant: 80),
+            
+            titleLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 16),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            subtitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            subtitleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+        ])
+        
+        return view
+    }()
+    
+    init(coordinator: SambaPlayCoordinator) {
+        self.coordinator = coordinator
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupUI()
+        setupBindings()
+        updateEmptyState()
+    }
+    
+    private func setupUI() {
+        title = "Queue"
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(dismissQueue))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Clear", style: .plain, target: self, action: #selector(clearQueue))
+        
+        view.addSubview(tableView)
+        view.addSubview(emptyStateView)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            
+            emptyStateView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            emptyStateView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            emptyStateView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            emptyStateView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+    
+    private func setupBindings() {
+        coordinator.playbackQueue.$tracks
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+                self?.updateEmptyState()
+            }
+            .store(in: &cancellables)
+        
+        coordinator.playbackQueue.$currentIndex
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func updateEmptyState() {
+        let isEmpty = coordinator.playbackQueue.tracks.isEmpty
+        tableView.isHidden = isEmpty
+        emptyStateView.isHidden = !isEmpty
+    }
+    
+    @objc private func dismissQueue() {
+        dismiss(animated: true)
+    }
+    
+    @objc private func clearQueue() {
+        let alert = UIAlertController(
+            title: "Clear Queue",
+            message: "Are you sure you want to remove all tracks from the queue?",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { [weak self] _ in
+            self?.coordinator.playbackQueue.clearQueue()
+            self?.coordinator.playbackQueue.saveToUserDefaults()
+        })
+        
+        present(alert, animated: true)
+    }
+}
+
+// MARK: - Queue Table View Data Source & Delegate
+extension QueueViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return coordinator.playbackQueue.tracks.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "QueueCell", for: indexPath) as! QueueTableViewCell
+        let track = coordinator.playbackQueue.tracks[indexPath.row]
+        let isCurrentTrack = indexPath.row == coordinator.playbackQueue.currentIndex
+        
+        cell.configure(with: track, isCurrentTrack: isCurrentTrack, position: indexPath.row + 1)
+        return cell
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        // Play the selected track
+        coordinator.playbackQueue.playTrack(at: indexPath.row)
+        let track = coordinator.playbackQueue.tracks[indexPath.row]
+        
+        coordinator.audioPlayer.loadFile(track) { [weak self] result in
+            switch result {
+            case .success:
+                self?.coordinator.audioPlayer.play()
+                self?.coordinator.playbackQueue.saveToUserDefaults()
+            case .failure(let error):
+                print("❌ Failed to load selected track: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        if editingStyle == .delete {
+            coordinator.playbackQueue.removeTrack(at: indexPath.row)
+            coordinator.playbackQueue.saveToUserDefaults()
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+        return true
+    }
+    
+    func tableView(_ tableView: UITableView, moveRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+        coordinator.playbackQueue.moveTrack(from: sourceIndexPath.row, to: destinationIndexPath.row)
+        coordinator.playbackQueue.saveToUserDefaults()
+    }
+}
+
+// MARK: - Queue Drag & Drop
+extension QueueViewController: UITableViewDragDelegate, UITableViewDropDelegate {
+    func tableView(_ tableView: UITableView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+        let track = coordinator.playbackQueue.tracks[indexPath.row]
+        let itemProvider = NSItemProvider(object: track.name as NSString)
+        let dragItem = UIDragItem(itemProvider: itemProvider)
+        dragItem.localObject = track
+        return [dragItem]
+    }
+    
+    func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
+        // Handle drop operations if needed
+    }
+    
+    func tableView(_ tableView: UITableView, canHandle session: UIDropSession) -> Bool {
+        return session.hasItemsConforming(toTypeIdentifiers: [UTType.text.identifier])
+    }
+    
+    func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
+        return UITableViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+    }
+}
+
+// MARK: - Queue Table View Cell
+class QueueTableViewCell: UITableViewCell {
+    private let positionLabel = UILabel()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let currentTrackIndicator = UIView()
+    
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        selectionStyle = .default
+        
+        positionLabel.translatesAutoresizingMaskIntoConstraints = false
+        positionLabel.font = .monospacedSystemFont(ofSize: 14, weight: .medium)
+        positionLabel.textColor = .systemGray
+        positionLabel.textAlignment = .center
+        positionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 16, weight: .medium)
+        titleLabel.textColor = .label
+        titleLabel.numberOfLines = 1
+        
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.numberOfLines = 1
+        
+        currentTrackIndicator.translatesAutoresizingMaskIntoConstraints = false
+        currentTrackIndicator.backgroundColor = .systemBlue
+        currentTrackIndicator.layer.cornerRadius = 2
+        currentTrackIndicator.isHidden = true
+        
+        contentView.addSubview(positionLabel)
+        contentView.addSubview(titleLabel)
+        contentView.addSubview(subtitleLabel)
+        contentView.addSubview(currentTrackIndicator)
+        
+        NSLayoutConstraint.activate([
+            positionLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            positionLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            positionLabel.widthAnchor.constraint(equalToConstant: 32),
+            
+            currentTrackIndicator.leadingAnchor.constraint(equalTo: positionLabel.trailingAnchor, constant: 8),
+            currentTrackIndicator.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            currentTrackIndicator.widthAnchor.constraint(equalToConstant: 4),
+            currentTrackIndicator.heightAnchor.constraint(equalToConstant: 32),
+            
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: currentTrackIndicator.trailingAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            subtitleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
+        ])
+    }
+    
+    func configure(with track: MediaFile, isCurrentTrack: Bool, position: Int) {
+        positionLabel.text = "\(position)"
+        titleLabel.text = track.name
+        subtitleLabel.text = ByteCountFormatter().string(fromByteCount: track.size)
+        
+        currentTrackIndicator.isHidden = !isCurrentTrack
+        
+        if isCurrentTrack {
+            titleLabel.textColor = .systemBlue
+            positionLabel.textColor = .systemBlue
+        } else {
+            titleLabel.textColor = .label
+            positionLabel.textColor = .systemGray
         }
     }
 } 
