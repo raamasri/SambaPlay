@@ -185,6 +185,220 @@ struct PlaybackPosition: Codable {
     }
 }
 
+// MARK: - App Settings Model
+class AppSettings: ObservableObject, Codable {
+    @Published var isDarkModeEnabled: Bool = false // System follows device setting
+    @Published var isAccessibilityEnhanced: Bool = true
+    @Published var isSearchEnabled: Bool = true
+    @Published var isDragDropEnabled: Bool = true
+    @Published var isVoiceOverOptimized: Bool = true
+    @Published var isDynamicTextEnabled: Bool = true
+    @Published var isHapticsEnabled: Bool = true
+    @Published var isAutoPlayEnabled: Bool = true
+    @Published var searchScopeIncludes: SearchScope = .all
+    @Published var dragDropFileTypes: DragDropScope = .audioOnly
+    @Published var accessibilityVerbosity: AccessibilityVerbosity = .standard
+    @Published var interfaceStyle: InterfaceStyle = .system
+    
+    enum SearchScope: String, CaseIterable, Codable {
+        case all = "All Files"
+        case audioOnly = "Audio Files Only"
+        case textOnly = "Text Files Only"
+        
+        var description: String { rawValue }
+    }
+    
+    enum DragDropScope: String, CaseIterable, Codable {
+        case audioOnly = "Audio Files Only"
+        case allSupported = "All Supported Files"
+        case disabled = "Disabled"
+        
+        var description: String { rawValue }
+    }
+    
+    enum AccessibilityVerbosity: String, CaseIterable, Codable {
+        case minimal = "Minimal"
+        case standard = "Standard"
+        case detailed = "Detailed"
+        
+        var description: String { rawValue }
+    }
+    
+    enum InterfaceStyle: String, CaseIterable, Codable {
+        case system = "System"
+        case light = "Light"
+        case dark = "Dark"
+        
+        var description: String { rawValue }
+    }
+    
+    static let shared = AppSettings()
+    
+    private init() {
+        loadSettings()
+    }
+    
+    // MARK: - Persistence
+    private func loadSettings() {
+        if let data = UserDefaults.standard.data(forKey: "AppSettings"),
+           let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
+            self.isDarkModeEnabled = settings.isDarkModeEnabled
+            self.isAccessibilityEnhanced = settings.isAccessibilityEnhanced
+            self.isSearchEnabled = settings.isSearchEnabled
+            self.isDragDropEnabled = settings.isDragDropEnabled
+            self.isVoiceOverOptimized = settings.isVoiceOverOptimized
+            self.isDynamicTextEnabled = settings.isDynamicTextEnabled
+            self.isHapticsEnabled = settings.isHapticsEnabled
+            self.isAutoPlayEnabled = settings.isAutoPlayEnabled
+            self.searchScopeIncludes = settings.searchScopeIncludes
+            self.dragDropFileTypes = settings.dragDropFileTypes
+            self.accessibilityVerbosity = settings.accessibilityVerbosity
+            self.interfaceStyle = settings.interfaceStyle
+        }
+    }
+    
+    func saveSettings() {
+        print("🔧 [Settings] Saving all settings to UserDefaults")
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: "AppSettings")
+            print("✅ [Settings] Settings saved successfully")
+        } else {
+            print("❌ [Settings] Failed to encode settings for saving")
+        }
+    }
+    
+    // MARK: - Settings Change Handlers with Logging
+    func setSearchEnabled(_ enabled: Bool) {
+        print("🔍 [Settings] Search functionality \(enabled ? "ENABLED" : "DISABLED")")
+        isSearchEnabled = enabled
+        saveSettings()
+    }
+    
+    func setDragDropEnabled(_ enabled: Bool) {
+        print("📥 [Settings] Drag & Drop functionality \(enabled ? "ENABLED" : "DISABLED")")
+        isDragDropEnabled = enabled
+        saveSettings()
+    }
+    
+    func setAccessibilityEnhanced(_ enabled: Bool) {
+        print("♿ [Settings] Enhanced Accessibility \(enabled ? "ENABLED" : "DISABLED")")
+        isAccessibilityEnhanced = enabled
+        saveSettings()
+    }
+    
+    func setVoiceOverOptimized(_ enabled: Bool) {
+        print("🗣️ [Settings] VoiceOver Optimization \(enabled ? "ENABLED" : "DISABLED")")
+        isVoiceOverOptimized = enabled
+        saveSettings()
+    }
+    
+    func setDynamicTextEnabled(_ enabled: Bool) {
+        print("📝 [Settings] Dynamic Text Sizing \(enabled ? "ENABLED" : "DISABLED")")
+        isDynamicTextEnabled = enabled
+        saveSettings()
+    }
+    
+    func setHapticsEnabled(_ enabled: Bool) {
+        print("📳 [Settings] Haptic Feedback \(enabled ? "ENABLED" : "DISABLED")")
+        isHapticsEnabled = enabled
+        saveSettings()
+    }
+    
+    func setAutoPlayEnabled(_ enabled: Bool) {
+        print("▶️ [Settings] Auto-Play \(enabled ? "ENABLED" : "DISABLED")")
+        isAutoPlayEnabled = enabled
+        saveSettings()
+    }
+    
+    func setSearchScope(_ scope: SearchScope) {
+        print("🔍 [Settings] Search scope changed to: \(scope.description)")
+        searchScopeIncludes = scope
+        saveSettings()
+    }
+    
+    func setDragDropScope(_ scope: DragDropScope) {
+        print("📥 [Settings] Drag & Drop scope changed to: \(scope.description)")
+        dragDropFileTypes = scope
+        saveSettings()
+    }
+    
+    func setAccessibilityVerbosity(_ verbosity: AccessibilityVerbosity) {
+        print("♿ [Settings] Accessibility verbosity changed to: \(verbosity.description)")
+        accessibilityVerbosity = verbosity
+        saveSettings()
+    }
+    
+    func setInterfaceStyle(_ style: InterfaceStyle) {
+        print("🎨 [Settings] Interface style changed to: \(style.description)")
+        interfaceStyle = style
+        saveSettings()
+        
+        // Apply interface style immediately
+        DispatchQueue.main.async {
+            self.applyInterfaceStyle()
+        }
+    }
+    
+    private func applyInterfaceStyle() {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first else {
+            print("❌ [Settings] Could not find window to apply interface style")
+            return
+        }
+        
+        switch interfaceStyle {
+        case .system:
+            print("🎨 [Settings] Applying SYSTEM interface style")
+            window.overrideUserInterfaceStyle = .unspecified
+        case .light:
+            print("🎨 [Settings] Applying LIGHT interface style")
+            window.overrideUserInterfaceStyle = .light
+        case .dark:
+            print("🎨 [Settings] Applying DARK interface style")
+            window.overrideUserInterfaceStyle = .dark
+        }
+    }
+    
+    // MARK: - Codable Implementation
+    enum CodingKeys: String, CodingKey {
+        case isDarkModeEnabled, isAccessibilityEnhanced, isSearchEnabled, isDragDropEnabled
+        case isVoiceOverOptimized, isDynamicTextEnabled, isHapticsEnabled, isAutoPlayEnabled
+        case searchScopeIncludes, dragDropFileTypes, accessibilityVerbosity, interfaceStyle
+    }
+    
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isDarkModeEnabled = try container.decode(Bool.self, forKey: .isDarkModeEnabled)
+        isAccessibilityEnhanced = try container.decode(Bool.self, forKey: .isAccessibilityEnhanced)
+        isSearchEnabled = try container.decode(Bool.self, forKey: .isSearchEnabled)
+        isDragDropEnabled = try container.decode(Bool.self, forKey: .isDragDropEnabled)
+        isVoiceOverOptimized = try container.decode(Bool.self, forKey: .isVoiceOverOptimized)
+        isDynamicTextEnabled = try container.decode(Bool.self, forKey: .isDynamicTextEnabled)
+        isHapticsEnabled = try container.decode(Bool.self, forKey: .isHapticsEnabled)
+        isAutoPlayEnabled = try container.decode(Bool.self, forKey: .isAutoPlayEnabled)
+        searchScopeIncludes = try container.decode(SearchScope.self, forKey: .searchScopeIncludes)
+        dragDropFileTypes = try container.decode(DragDropScope.self, forKey: .dragDropFileTypes)
+        accessibilityVerbosity = try container.decode(AccessibilityVerbosity.self, forKey: .accessibilityVerbosity)
+        interfaceStyle = try container.decode(InterfaceStyle.self, forKey: .interfaceStyle)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isDarkModeEnabled, forKey: .isDarkModeEnabled)
+        try container.encode(isAccessibilityEnhanced, forKey: .isAccessibilityEnhanced)
+        try container.encode(isSearchEnabled, forKey: .isSearchEnabled)
+        try container.encode(isDragDropEnabled, forKey: .isDragDropEnabled)
+        try container.encode(isVoiceOverOptimized, forKey: .isVoiceOverOptimized)
+        try container.encode(isDynamicTextEnabled, forKey: .isDynamicTextEnabled)
+        try container.encode(isHapticsEnabled, forKey: .isHapticsEnabled)
+        try container.encode(isAutoPlayEnabled, forKey: .isAutoPlayEnabled)
+        try container.encode(searchScopeIncludes, forKey: .searchScopeIncludes)
+        try container.encode(dragDropFileTypes, forKey: .dragDropFileTypes)
+        try container.encode(accessibilityVerbosity, forKey: .accessibilityVerbosity)
+        try container.encode(interfaceStyle, forKey: .interfaceStyle)
+    }
+}
+
 // MARK: - Recent Source Model
 enum RecentSourceType: String, Codable {
     case server
@@ -911,6 +1125,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     private var displayLink: CADisplayLink?
     private var startTime: Date?
     private weak var networkService: SimpleNetworkService?
+    private weak var coordinator: SambaPlayCoordinator?
     
     // Progressive download support
     private var downloadTask: URLSessionDownloadTask?
@@ -931,6 +1146,22 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     func setNetworkService(_ service: SimpleNetworkService) {
         self.networkService = service
+    }
+    
+    func setCoordinator(_ coordinator: SambaPlayCoordinator) {
+        self.coordinator = coordinator
+    }
+    
+    // MARK: - Haptic Feedback
+    private func triggerHapticFeedback(style: UIImpactFeedbackGenerator.FeedbackStyle) {
+        guard coordinator?.settings.isHapticsEnabled == true else {
+            print("📳 [Haptics] Haptic feedback disabled in settings")
+            return
+        }
+        
+        print("📳 [Haptics] Triggering \(style) haptic feedback")
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.impactOccurred()
     }
     
     override init() {
@@ -1018,6 +1249,7 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     }
     
     func loadFile(_ file: MediaFile, completion: @escaping (Result<Void, Error>) -> Void) {
+        print("📂 [AudioPlayer] Loading file: \(file.name)")
         currentFile = file
         playerState = .stopped
         hasRestoredPosition = false
@@ -1033,11 +1265,29 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
         
         // If this is the Sample Song, load the actual bundled audio file
         if file.name == "Sample Song.mp3" {
-            loadLocalAudioFile(file: file, completion: completion)
+            loadLocalAudioFile(file: file) { [weak self] result in
+                completion(result)
+                
+                // Auto-play if enabled in settings
+                if case .success = result, self?.coordinator?.settings.isAutoPlayEnabled == true {
+                    print("▶️ [AudioPlayer] Auto-play enabled, starting playback")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.play()
+                    }
+                }
+            }
         } else {
             // For demo files, simulate different audio formats
             simulateAudioFormat(for: file)
             completion(.success(()))
+            
+            // Auto-play if enabled in settings
+            if coordinator?.settings.isAutoPlayEnabled == true {
+                print("▶️ [AudioPlayer] Auto-play enabled, starting playback")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.play()
+                }
+            }
         }
         
         // Check for saved position and offer to restore it manually
@@ -1134,6 +1384,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     func play() {
         guard let file = currentFile else { return }
         
+        print("▶️ [AudioPlayer] Starting playback for: \(file.name)")
+        triggerHapticFeedback(style: .light)
+        
         do {
             if !audioEngine.isRunning {
                 try audioEngine.start()
@@ -1154,8 +1407,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
             }
             
             playerState = .playing
+            print("✅ [AudioPlayer] Playback started successfully")
         } catch {
-            print("Failed to start audio engine: \(error)")
+            print("❌ [AudioPlayer] Failed to start audio engine: \(error)")
         }
     }
     
@@ -1226,17 +1480,20 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     }
     
     func pause() {
+        print("⏸️ [AudioPlayer] Pausing playback")
+        triggerHapticFeedback(style: .light)
+        
         if let file = currentFile, file.name == "Sample Song.mp3" {
             if playerNode.isPlaying {
                 playerNode.pause()
-                print("Paused real audio at \(currentTime)s")
+                print("⏸️ [AudioPlayer] Paused real audio at \(currentTime)s")
             }
         }
         playerState = .paused
         
         // Save current position when pausing
         saveCurrentPosition()
-        print("Audio paused at \(currentTime)s, state: \(playerState)")
+        print("✅ [AudioPlayer] Audio paused at \(currentTime)s, state: \(playerState)")
     }
     
     func stop() {
@@ -1257,7 +1514,9 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
     
     func seek(to time: TimeInterval) {
         let clampedTime = max(0, min(time, duration))
-        print("Seeking from \(currentTime)s to \(clampedTime)s")
+        print("🔄 [AudioPlayer] Seeking from \(currentTime)s to \(clampedTime)s")
+        triggerHapticFeedback(style: .medium)
+        
         currentTime = clampedTime
         
         // Handle real audio file seeking
@@ -1269,6 +1528,8 @@ class SimpleAudioPlayer: NSObject, ObservableObject {
                 startTime = Date().addingTimeInterval(-clampedTime / Double(speed))
             }
         }
+        
+        print("✅ [AudioPlayer] Seek completed to \(clampedTime)s")
     }
     
     private func seekRealAudioFile(to time: TimeInterval) {
@@ -1559,10 +1820,12 @@ class SambaPlayCoordinator {
     
     let networkService = SimpleNetworkService()
     let audioPlayer = SimpleAudioPlayer()
+    let settings = AppSettings.shared
     
     private init() {
         // Connect the audio player with the network service for position memory
         audioPlayer.setNetworkService(networkService)
+        audioPlayer.setCoordinator(self)
     }
     
     func createMainViewController() -> UIViewController {
@@ -1689,7 +1952,47 @@ class MainViewController: UIViewController {
         setupUI()
         setupBindings()
         setupDragAndDrop()
+        setupSettingsObserver()
         connectToDemo()
+    }
+    
+    private func setupSettingsObserver() {
+        // Listen for settings changes to update UI dynamically
+        coordinator.settings.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                print("⚙️ [MainVC] Settings changed, updating UI...")
+                self?.updateUIForSettingsChange()
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func updateUIForSettingsChange() {
+        // Update search controller
+        if coordinator.settings.isSearchEnabled && navigationItem.searchController == nil {
+            print("🔍 [MainVC] Enabling search controller")
+            let searchController = UISearchController(searchResultsController: nil)
+            searchController.searchResultsUpdater = self
+            searchController.obscuresBackgroundDuringPresentation = false
+            searchController.searchBar.placeholder = "Search files and folders"
+            searchController.searchBar.accessibilityLabel = "Search files and folders"
+            searchController.searchBar.accessibilityTraits = .searchField
+            navigationItem.searchController = searchController
+            definesPresentationContext = true
+        } else if !coordinator.settings.isSearchEnabled && navigationItem.searchController != nil {
+            print("🔍 [MainVC] Disabling search controller")
+            navigationItem.searchController = nil
+        }
+        
+        // Update drag and drop
+        setupDragAndDrop()
+        
+        // Refresh search results if currently searching
+        if isSearching {
+            if let searchController = navigationItem.searchController {
+                updateSearchResults(for: searchController)
+            }
+        }
     }
     
     private func setupUI() {
@@ -1698,23 +2001,38 @@ class MainViewController: UIViewController {
         
         navigationController?.navigationBar.prefersLargeTitles = true
         
-        // Setup search controller
-        let searchController = UISearchController(searchResultsController: nil)
-        searchController.searchResultsUpdater = self
-        searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search files and folders"
-        searchController.searchBar.accessibilityLabel = "Search files and folders"
-        searchController.searchBar.accessibilityTraits = .searchField
-        navigationItem.searchController = searchController
-        definesPresentationContext = true
+        // Setup search controller (if enabled in settings)
+        if coordinator.settings.isSearchEnabled {
+            print("🔍 [MainVC] Setting up search controller - search is ENABLED")
+            let searchController = UISearchController(searchResultsController: nil)
+            searchController.searchResultsUpdater = self
+            searchController.obscuresBackgroundDuringPresentation = false
+            searchController.searchBar.placeholder = "Search files and folders"
+            searchController.searchBar.accessibilityLabel = "Search files and folders"
+            searchController.searchBar.accessibilityTraits = .searchField
+            navigationItem.searchController = searchController
+            definesPresentationContext = true
+        } else {
+            print("🔍 [MainVC] Search controller disabled in settings")
+            navigationItem.searchController = nil
+        }
         
         // Navigation bar buttons
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let serversButton = UIBarButtonItem(
             image: UIImage(systemName: "server.rack"),
             style: .plain,
             target: self,
             action: #selector(showServers)
         )
+        
+        let settingsButton = UIBarButtonItem(
+            image: UIImage(systemName: "gear"),
+            style: .plain,
+            target: self,
+            action: #selector(showSettings)
+        )
+        
+        navigationItem.rightBarButtonItems = [settingsButton, serversButton]
         
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "folder"),
@@ -1905,12 +2223,26 @@ class MainViewController: UIViewController {
     }
     
     private func setupDragAndDrop() {
-        // Enable drag and drop on the table view
-        tableView.dragInteractionEnabled = true
-        tableView.dropDelegate = self
-        
-        // Enable drag and drop on the main view for importing files
-        view.addInteraction(UIDropInteraction(delegate: self))
+        // Enable drag and drop only if enabled in settings
+        if coordinator.settings.isDragDropEnabled && coordinator.settings.dragDropFileTypes != .disabled {
+            print("📥 [MainVC] Setting up drag & drop - ENABLED with scope: \(coordinator.settings.dragDropFileTypes.description)")
+            tableView.dragInteractionEnabled = true
+            tableView.dropDelegate = self
+            
+            // Enable drag and drop on the main view for importing files
+            view.addInteraction(UIDropInteraction(delegate: self))
+        } else {
+            print("📥 [MainVC] Drag & drop disabled in settings")
+            tableView.dragInteractionEnabled = false
+            tableView.dropDelegate = nil
+            
+            // Remove existing drop interactions
+            view.interactions.forEach { interaction in
+                if interaction is UIDropInteraction {
+                    view.removeInteraction(interaction)
+                }
+            }
+        }
     }
     
     @objc private func navigateBack() {
@@ -1947,6 +2279,12 @@ class MainViewController: UIViewController {
         }
         
         present(alert, animated: true)
+    }
+    
+    @objc private func showSettings() {
+        let settingsVC = SettingsViewController(coordinator: coordinator)
+        let navController = UINavigationController(rootViewController: settingsVC)
+        present(navController, animated: true)
     }
     
     private func showAddServerDialog() {
@@ -2175,8 +2513,23 @@ extension MainViewController: UISearchResultsUpdating {
             currentFiles = allFiles
         } else {
             isSearching = true
-            currentFiles = allFiles.filter { file in
+            let filteredFiles = allFiles.filter { file in
                 file.name.localizedCaseInsensitiveContains(searchText)
+            }
+            
+            // Apply search scope filter based on settings
+            switch coordinator.settings.searchScopeIncludes {
+            case .all:
+                print("🔍 [Search] Applying ALL FILES scope - showing \(filteredFiles.count) results")
+                currentFiles = filteredFiles
+            case .audioOnly:
+                let audioFiles = filteredFiles.filter { $0.isAudioFile }
+                print("🔍 [Search] Applying AUDIO ONLY scope - showing \(audioFiles.count) results")
+                currentFiles = audioFiles
+            case .textOnly:
+                let textFiles = filteredFiles.filter { $0.isTextFile }
+                print("🔍 [Search] Applying TEXT ONLY scope - showing \(textFiles.count) results")
+                currentFiles = textFiles
             }
         }
         
@@ -2231,12 +2584,30 @@ extension MainViewController: UITableViewDropDelegate, UIDropInteractionDelegate
     
     // MARK: - Drop Handling
     private func handleDroppedFile(url: URL) {
-        // Check if it's an audio file
+        // Check file type based on settings
         let audioExtensions = ["mp3", "m4a", "wav", "aiff", "flac", "ogg", "wma", "aac"]
+        let textExtensions = ["txt"]
         let fileExtension = url.pathExtension.lowercased()
         
-        guard audioExtensions.contains(fileExtension) else {
-            showAlert(title: "Unsupported File", message: "Only audio files can be imported via drag and drop.")
+        let isAudioFile = audioExtensions.contains(fileExtension)
+        let isTextFile = textExtensions.contains(fileExtension)
+        
+        switch coordinator.settings.dragDropFileTypes {
+        case .audioOnly:
+            print("📥 [DragDrop] Audio-only mode: \(fileExtension) -> \(isAudioFile ? "ACCEPTED" : "REJECTED")")
+            guard isAudioFile else {
+                showAlert(title: "Unsupported File", message: "Only audio files can be imported via drag and drop.")
+                return
+            }
+        case .allSupported:
+            print("📥 [DragDrop] All-supported mode: \(fileExtension) -> \(isAudioFile || isTextFile ? "ACCEPTED" : "REJECTED")")
+            guard isAudioFile || isTextFile else {
+                showAlert(title: "Unsupported File", message: "Only audio and text files can be imported via drag and drop.")
+                return
+            }
+        case .disabled:
+            print("📥 [DragDrop] Drag & drop disabled in settings -> REJECTED")
+            showAlert(title: "Drag & Drop Disabled", message: "Drag and drop is currently disabled in settings.")
             return
         }
         
@@ -4083,5 +4454,691 @@ extension FolderHistoryViewController: UIDocumentPickerDelegate {
     
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         // User cancelled, do nothing
+    }
+}
+
+// MARK: - Settings View Controller
+class SettingsViewController: UIViewController {
+    private let coordinator: SambaPlayCoordinator
+    private var cancellables = Set<AnyCancellable>()
+    
+    private lazy var tableView: UITableView = {
+        let table = UITableView(frame: .zero, style: .insetGrouped)
+        table.translatesAutoresizingMaskIntoConstraints = false
+        table.delegate = self
+        table.dataSource = self
+        table.register(UITableViewCell.self, forCellReuseIdentifier: "SettingCell")
+        table.register(SwitchTableViewCell.self, forCellReuseIdentifier: "SwitchCell")
+        table.register(SegmentedTableViewCell.self, forCellReuseIdentifier: "SegmentedCell")
+        table.rowHeight = UITableView.automaticDimension
+        table.estimatedRowHeight = 80 // Increased for segmented cells
+        table.sectionHeaderHeight = UITableView.automaticDimension
+        table.estimatedSectionHeaderHeight = 30
+        table.sectionFooterHeight = UITableView.automaticDimension
+        table.estimatedSectionFooterHeight = 20
+        return table
+    }()
+    
+    // Settings sections
+    private enum SettingsSection: Int, CaseIterable {
+        case interface = 0
+        case accessibility = 1
+        case functionality = 2
+        case playback = 3
+        case about = 4
+        
+        var title: String {
+            switch self {
+            case .interface: return "Interface"
+            case .accessibility: return "Accessibility"
+            case .functionality: return "Functionality"
+            case .playback: return "Playback"
+            case .about: return "About"
+            }
+        }
+        
+        var footer: String? {
+            switch self {
+            case .interface: return "Customize the app's appearance and behavior"
+            case .accessibility: return "Enhance accessibility features for better usability"
+            case .functionality: return "Configure search, drag & drop, and file handling"
+            case .playback: return "Control audio playback behavior"
+            case .about: return nil
+            }
+        }
+    }
+    
+    private enum InterfaceRow: Int, CaseIterable {
+        case interfaceStyle = 0
+        case haptics = 1
+        
+        var title: String {
+            switch self {
+            case .interfaceStyle: return "Interface Style"
+            case .haptics: return "Haptic Feedback"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .interfaceStyle: return "Choose light, dark, or system"
+            case .haptics: return "Vibration feedback for interactions"
+            }
+        }
+    }
+    
+    private enum AccessibilityRow: Int, CaseIterable {
+        case enhancedAccessibility = 0
+        case voiceOverOptimization = 1
+        case dynamicText = 2
+        case verbosity = 3
+        
+        var title: String {
+            switch self {
+            case .enhancedAccessibility: return "Enhanced Accessibility"
+            case .voiceOverOptimization: return "VoiceOver Optimization"
+            case .dynamicText: return "Dynamic Text Sizing"
+            case .verbosity: return "Accessibility Verbosity"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .enhancedAccessibility: return "Enable comprehensive accessibility features"
+            case .voiceOverOptimization: return "Optimize interface for VoiceOver users"
+            case .dynamicText: return "Respect system text size preferences"
+            case .verbosity: return "Control amount of accessibility information"
+            }
+        }
+    }
+    
+    private enum FunctionalityRow: Int, CaseIterable {
+        case search = 0
+        case searchScope = 1
+        case dragDrop = 2
+        case dragDropScope = 3
+        
+        var title: String {
+            switch self {
+            case .search: return "File Search"
+            case .searchScope: return "Search Scope"
+            case .dragDrop: return "Drag & Drop"
+            case .dragDropScope: return "Drag & Drop Files"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .search: return "Enable real-time file search"
+            case .searchScope: return "What files to include in search"
+            case .dragDrop: return "Import files via drag and drop"
+            case .dragDropScope: return "Which file types to accept"
+            }
+        }
+    }
+    
+    private enum PlaybackRow: Int, CaseIterable {
+        case autoPlay = 0
+        
+        var title: String {
+            switch self {
+            case .autoPlay: return "Auto-Play"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .autoPlay: return "Automatically start playback when loading files"
+            }
+        }
+    }
+    
+    private enum AboutRow: Int, CaseIterable {
+        case version = 0
+        case resetSettings = 1
+        
+        var title: String {
+            switch self {
+            case .version: return "Version"
+            case .resetSettings: return "Reset All Settings"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .version: return "SambaPlay v0.27.0"
+            case .resetSettings: return "Restore default settings"
+            }
+        }
+    }
+    
+    init(coordinator: SambaPlayCoordinator) {
+        self.coordinator = coordinator
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupUI()
+        setupBindings()
+    }
+    
+    private func setupUI() {
+        title = "Settings"
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .cancel,
+            target: self,
+            action: #selector(dismissSettings)
+        )
+        
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .save,
+            target: self,
+            action: #selector(saveSettings)
+        )
+        
+        view.addSubview(tableView)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+    
+    private func setupBindings() {
+        // Listen for settings changes and update UI accordingly
+        coordinator.settings.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+            }
+            .store(in: &cancellables)
+    }
+    
+    @objc private func dismissSettings() {
+        dismiss(animated: true)
+    }
+    
+    @objc private func saveSettings() {
+        coordinator.settings.saveSettings()
+        
+        // Show confirmation
+        let alert = UIAlertController(title: "Settings Saved", message: "Your preferences have been saved successfully.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+            self.dismiss(animated: true)
+        })
+        present(alert, animated: true)
+    }
+    
+    private func showResetConfirmation() {
+        let alert = UIAlertController(
+            title: "Reset All Settings",
+            message: "Are you sure you want to reset all settings to their default values? This action cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { _ in
+            self.resetAllSettings()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
+    }
+    
+    private func resetAllSettings() {
+        // Reset all settings to defaults
+        coordinator.settings.isDarkModeEnabled = false
+        coordinator.settings.isAccessibilityEnhanced = true
+        coordinator.settings.isSearchEnabled = true
+        coordinator.settings.isDragDropEnabled = true
+        coordinator.settings.isVoiceOverOptimized = true
+        coordinator.settings.isDynamicTextEnabled = true
+        coordinator.settings.isHapticsEnabled = true
+        coordinator.settings.isAutoPlayEnabled = true
+        coordinator.settings.searchScopeIncludes = .all
+        coordinator.settings.dragDropFileTypes = .audioOnly
+        coordinator.settings.accessibilityVerbosity = .standard
+        coordinator.settings.interfaceStyle = .system
+        
+        coordinator.settings.saveSettings()
+        tableView.reloadData()
+        
+        // Show confirmation
+        let alert = UIAlertController(title: "Settings Reset", message: "All settings have been reset to their default values.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+}
+
+// MARK: - Settings Table View Data Source & Delegate
+extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return SettingsSection.allCases.count
+    }
+    
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        guard let settingsSection = SettingsSection(rawValue: section) else { return 0 }
+        
+        switch settingsSection {
+        case .interface:
+            return InterfaceRow.allCases.count
+        case .accessibility:
+            return AccessibilityRow.allCases.count
+        case .functionality:
+            return FunctionalityRow.allCases.count
+        case .playback:
+            return PlaybackRow.allCases.count
+        case .about:
+            return AboutRow.allCases.count
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return SettingsSection(rawValue: section)?.title
+    }
+    
+    func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        return SettingsSection(rawValue: section)?.footer
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard let settingsSection = SettingsSection(rawValue: indexPath.section) else {
+            return UITableViewCell()
+        }
+        
+        switch settingsSection {
+        case .interface:
+            return configureInterfaceCell(for: indexPath)
+        case .accessibility:
+            return configureAccessibilityCell(for: indexPath)
+        case .functionality:
+            return configureFunctionalityCell(for: indexPath)
+        case .playback:
+            return configurePlaybackCell(for: indexPath)
+        case .about:
+            return configureAboutCell(for: indexPath)
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        guard let settingsSection = SettingsSection(rawValue: indexPath.section) else { return }
+        
+        switch settingsSection {
+        case .about:
+            if indexPath.row == AboutRow.resetSettings.rawValue {
+                showResetConfirmation()
+            }
+        default:
+            break
+        }
+    }
+    
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        guard let settingsSection = SettingsSection(rawValue: indexPath.section) else {
+            return UITableView.automaticDimension
+        }
+        
+        // Return specific heights for segmented control cells
+        switch settingsSection {
+        case .interface:
+            if let row = InterfaceRow(rawValue: indexPath.row), row == .interfaceStyle {
+                return 100 // Extra height for segmented control
+            }
+        case .accessibility:
+            if let row = AccessibilityRow(rawValue: indexPath.row), row == .verbosity {
+                return 100 // Extra height for segmented control
+            }
+        case .functionality:
+            if let row = FunctionalityRow(rawValue: indexPath.row), 
+               row == .searchScope || row == .dragDropScope {
+                return 100 // Extra height for segmented control
+            }
+        default:
+            break
+        }
+        
+        return UITableView.automaticDimension
+    }
+    
+    private func configureInterfaceCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = InterfaceRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        switch row {
+        case .interfaceStyle:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SegmentedCell", for: indexPath) as! SegmentedTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                options: AppSettings.InterfaceStyle.allCases.map { $0.description },
+                selectedIndex: AppSettings.InterfaceStyle.allCases.firstIndex(of: coordinator.settings.interfaceStyle) ?? 0
+            ) { [weak self] selectedIndex in
+                if let style = AppSettings.InterfaceStyle.allCases[safe: selectedIndex] {
+                    self?.coordinator.settings.setInterfaceStyle(style)
+                }
+            }
+            return cell
+            
+        case .haptics:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isHapticsEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setHapticsEnabled(isOn)
+            }
+            return cell
+        }
+    }
+    
+    private func configureAccessibilityCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = AccessibilityRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        switch row {
+        case .enhancedAccessibility:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isAccessibilityEnhanced
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setAccessibilityEnhanced(isOn)
+            }
+            return cell
+            
+        case .voiceOverOptimization:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isVoiceOverOptimized
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setVoiceOverOptimized(isOn)
+            }
+            return cell
+            
+        case .dynamicText:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isDynamicTextEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setDynamicTextEnabled(isOn)
+            }
+            return cell
+            
+        case .verbosity:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SegmentedCell", for: indexPath) as! SegmentedTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                options: AppSettings.AccessibilityVerbosity.allCases.map { $0.description },
+                selectedIndex: AppSettings.AccessibilityVerbosity.allCases.firstIndex(of: coordinator.settings.accessibilityVerbosity) ?? 1
+            ) { [weak self] selectedIndex in
+                if let verbosity = AppSettings.AccessibilityVerbosity.allCases[safe: selectedIndex] {
+                    self?.coordinator.settings.setAccessibilityVerbosity(verbosity)
+                }
+            }
+            return cell
+        }
+    }
+    
+    private func configureFunctionalityCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = FunctionalityRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        switch row {
+        case .search:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isSearchEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setSearchEnabled(isOn)
+            }
+            return cell
+            
+        case .searchScope:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SegmentedCell", for: indexPath) as! SegmentedTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                options: AppSettings.SearchScope.allCases.map { $0.description },
+                selectedIndex: AppSettings.SearchScope.allCases.firstIndex(of: coordinator.settings.searchScopeIncludes) ?? 0
+            ) { [weak self] selectedIndex in
+                if let scope = AppSettings.SearchScope.allCases[safe: selectedIndex] {
+                    self?.coordinator.settings.setSearchScope(scope)
+                }
+            }
+            return cell
+            
+        case .dragDrop:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isDragDropEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setDragDropEnabled(isOn)
+            }
+            return cell
+            
+        case .dragDropScope:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SegmentedCell", for: indexPath) as! SegmentedTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                options: AppSettings.DragDropScope.allCases.map { $0.description },
+                selectedIndex: AppSettings.DragDropScope.allCases.firstIndex(of: coordinator.settings.dragDropFileTypes) ?? 0
+            ) { [weak self] selectedIndex in
+                if let scope = AppSettings.DragDropScope.allCases[safe: selectedIndex] {
+                    self?.coordinator.settings.setDragDropScope(scope)
+                }
+            }
+            return cell
+        }
+    }
+    
+    private func configurePlaybackCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = PlaybackRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        switch row {
+        case .autoPlay:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isAutoPlayEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setAutoPlayEnabled(isOn)
+            }
+            return cell
+        }
+    }
+    
+    private func configureAboutCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = AboutRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+        cell.textLabel?.text = row.title
+        cell.detailTextLabel?.text = row.subtitle
+        
+        switch row {
+        case .version:
+            cell.accessoryType = .none
+            cell.selectionStyle = .none
+        case .resetSettings:
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemRed
+        }
+        
+        return cell
+    }
+}
+
+// MARK: - Custom Table View Cells
+class SwitchTableViewCell: UITableViewCell {
+    private let switchControl = UISwitch()
+    private var onToggle: ((Bool) -> Void)?
+    
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        accessoryView = switchControl
+        switchControl.addTarget(self, action: #selector(switchToggled), for: .valueChanged)
+        selectionStyle = .none
+        
+        // Ensure proper spacing for text labels
+        textLabel?.numberOfLines = 0
+        detailTextLabel?.numberOfLines = 0
+        textLabel?.font = .preferredFont(forTextStyle: .body)
+        detailTextLabel?.font = .preferredFont(forTextStyle: .caption1)
+        textLabel?.adjustsFontForContentSizeCategory = true
+        detailTextLabel?.adjustsFontForContentSizeCategory = true
+    }
+    
+    func configure(title: String, subtitle: String?, isOn: Bool, onToggle: @escaping (Bool) -> Void) {
+        textLabel?.text = title
+        detailTextLabel?.text = subtitle
+        switchControl.isOn = isOn
+        self.onToggle = onToggle
+        
+        // Accessibility
+        accessibilityLabel = title
+        accessibilityValue = isOn ? "On" : "Off"
+        accessibilityTraits = .button
+        if let subtitle = subtitle {
+            accessibilityHint = subtitle
+        }
+    }
+    
+    @objc private func switchToggled() {
+        onToggle?(switchControl.isOn)
+    }
+}
+
+class SegmentedTableViewCell: UITableViewCell {
+    private let segmentedControl = UISegmentedControl()
+    private var onSelectionChanged: ((Int) -> Void)?
+    
+    private lazy var titleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = .label
+        label.numberOfLines = 0
+        return label
+    }()
+    
+    private lazy var subtitleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = .secondaryLabel
+        label.numberOfLines = 0
+        return label
+    }()
+    
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .default, reuseIdentifier: reuseIdentifier)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        contentView.addSubview(titleLabel)
+        contentView.addSubview(subtitleLabel)
+        contentView.addSubview(segmentedControl)
+        
+        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
+        segmentedControl.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
+        selectionStyle = .none
+        
+        NSLayoutConstraint.activate([
+            // Title label
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            
+            // Subtitle label
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            subtitleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            subtitleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            
+            // Segmented control
+            segmentedControl.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
+            segmentedControl.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            segmentedControl.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            segmentedControl.heightAnchor.constraint(equalToConstant: 32),
+            segmentedControl.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
+        ])
+    }
+    
+    func configure(title: String, subtitle: String?, options: [String], selectedIndex: Int, onSelectionChanged: @escaping (Int) -> Void) {
+        titleLabel.text = title
+        subtitleLabel.text = subtitle
+        subtitleLabel.isHidden = subtitle?.isEmpty ?? true
+        
+        // Remove all segments and add new ones
+        segmentedControl.removeAllSegments()
+        for (index, option) in options.enumerated() {
+            segmentedControl.insertSegment(withTitle: option, at: index, animated: false)
+        }
+        
+        segmentedControl.selectedSegmentIndex = selectedIndex
+        self.onSelectionChanged = onSelectionChanged
+        
+        // Accessibility
+        accessibilityLabel = title
+        accessibilityValue = options[safe: selectedIndex]
+        accessibilityTraits = .button
+        if let subtitle = subtitle {
+            accessibilityHint = subtitle
+        }
+    }
+    
+    @objc private func segmentChanged() {
+        onSelectionChanged?(segmentedControl.selectedSegmentIndex)
+    }
+}
+
+// MARK: - Array Extension for Safe Access
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
     }
 } 
