@@ -195,6 +195,7 @@ class AppSettings: ObservableObject, Codable {
     @Published var isDynamicTextEnabled: Bool = true
     @Published var isHapticsEnabled: Bool = true
     @Published var isAutoPlayEnabled: Bool = true
+    @Published var isLyricsSearchEnabled: Bool = false // New lyrics search toggle
     @Published var searchScopeIncludes: SearchScope = .all
     @Published var dragDropFileTypes: DragDropScope = .audioOnly
     @Published var accessibilityVerbosity: AccessibilityVerbosity = .standard
@@ -250,6 +251,7 @@ class AppSettings: ObservableObject, Codable {
             self.isDynamicTextEnabled = settings.isDynamicTextEnabled
             self.isHapticsEnabled = settings.isHapticsEnabled
             self.isAutoPlayEnabled = settings.isAutoPlayEnabled
+            self.isLyricsSearchEnabled = settings.isLyricsSearchEnabled
             self.searchScopeIncludes = settings.searchScopeIncludes
             self.dragDropFileTypes = settings.dragDropFileTypes
             self.accessibilityVerbosity = settings.accessibilityVerbosity
@@ -271,6 +273,12 @@ class AppSettings: ObservableObject, Codable {
     func setSearchEnabled(_ enabled: Bool) {
         print("🔍 [Settings] Search functionality \(enabled ? "ENABLED" : "DISABLED")")
         isSearchEnabled = enabled
+        saveSettings()
+    }
+    
+    func setLyricsSearchEnabled(_ enabled: Bool) {
+        print("🎵 [Settings] Lyrics search \(enabled ? "ENABLED" : "DISABLED")")
+        isLyricsSearchEnabled = enabled
         saveSettings()
     }
     
@@ -363,7 +371,7 @@ class AppSettings: ObservableObject, Codable {
     enum CodingKeys: String, CodingKey {
         case isDarkModeEnabled, isAccessibilityEnhanced, isSearchEnabled, isDragDropEnabled
         case isVoiceOverOptimized, isDynamicTextEnabled, isHapticsEnabled, isAutoPlayEnabled
-        case searchScopeIncludes, dragDropFileTypes, accessibilityVerbosity, interfaceStyle
+        case isLyricsSearchEnabled, searchScopeIncludes, dragDropFileTypes, accessibilityVerbosity, interfaceStyle
     }
     
     required init(from decoder: Decoder) throws {
@@ -376,6 +384,7 @@ class AppSettings: ObservableObject, Codable {
         isDynamicTextEnabled = try container.decode(Bool.self, forKey: .isDynamicTextEnabled)
         isHapticsEnabled = try container.decode(Bool.self, forKey: .isHapticsEnabled)
         isAutoPlayEnabled = try container.decode(Bool.self, forKey: .isAutoPlayEnabled)
+        isLyricsSearchEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLyricsSearchEnabled) ?? false
         searchScopeIncludes = try container.decode(SearchScope.self, forKey: .searchScopeIncludes)
         dragDropFileTypes = try container.decode(DragDropScope.self, forKey: .dragDropFileTypes)
         accessibilityVerbosity = try container.decode(AccessibilityVerbosity.self, forKey: .accessibilityVerbosity)
@@ -392,6 +401,7 @@ class AppSettings: ObservableObject, Codable {
         try container.encode(isDynamicTextEnabled, forKey: .isDynamicTextEnabled)
         try container.encode(isHapticsEnabled, forKey: .isHapticsEnabled)
         try container.encode(isAutoPlayEnabled, forKey: .isAutoPlayEnabled)
+        try container.encode(isLyricsSearchEnabled, forKey: .isLyricsSearchEnabled)
         try container.encode(searchScopeIncludes, forKey: .searchScopeIncludes)
         try container.encode(dragDropFileTypes, forKey: .dragDropFileTypes)
         try container.encode(accessibilityVerbosity, forKey: .accessibilityVerbosity)
@@ -1100,6 +1110,39 @@ class SimpleNetworkService: ObservableObject {
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             completion(.success(text))
+        }
+    }
+    
+    // MARK: - Lyrics Search Support
+    func searchInTextFiles(query: String, completion: @escaping (Result<[MediaFile], Error>) -> Void) {
+        print("🎵 [NetworkService] Searching for '\(query)' in text files...")
+        
+        // Get all text files from current directory
+        let textFiles = currentFiles.filter { $0.isTextFile }
+        print("🎵 [NetworkService] Found \(textFiles.count) text files to search")
+        
+        var matchingFiles: [MediaFile] = []
+        let dispatchGroup = DispatchGroup()
+        
+        for file in textFiles {
+            dispatchGroup.enter()
+            readTextFile(at: file.path) { result in
+                switch result {
+                case .success(let content):
+                    if content.localizedCaseInsensitiveContains(query) {
+                        print("🎵 [NetworkService] Found match in: \(file.name)")
+                        matchingFiles.append(file)
+                    }
+                case .failure(let error):
+                    print("❌ [NetworkService] Failed to read \(file.name): \(error)")
+                }
+                dispatchGroup.leave()
+            }
+        }
+        
+        dispatchGroup.notify(queue: .main) {
+            print("🎵 [NetworkService] Lyrics search completed - found \(matchingFiles.count) matches")
+            completion(.success(matchingFiles))
         }
     }
 }
@@ -2037,6 +2080,7 @@ class MainViewController: UIViewController {
     private var currentFiles: [MediaFile] = []
     private var allFiles: [MediaFile] = [] // Store all files for search filtering
     private var isSearching = false
+    private var isLyricsSearching = false // Track if currently searching lyrics
     
     init(coordinator: SambaPlayCoordinator) {
         self.coordinator = coordinator
@@ -2071,17 +2115,13 @@ class MainViewController: UIViewController {
         // Update search controller
         if coordinator.settings.isSearchEnabled && navigationItem.searchController == nil {
             print("🔍 [MainVC] Enabling search controller")
-            let searchController = UISearchController(searchResultsController: nil)
-            searchController.searchResultsUpdater = self
-            searchController.obscuresBackgroundDuringPresentation = false
-            searchController.searchBar.placeholder = "Search files and folders"
-            searchController.searchBar.accessibilityLabel = "Search files and folders"
-            searchController.searchBar.accessibilityTraits = .searchField
-            navigationItem.searchController = searchController
-            definesPresentationContext = true
+            setupSearchController()
         } else if !coordinator.settings.isSearchEnabled && navigationItem.searchController != nil {
             print("🔍 [MainVC] Disabling search controller")
             navigationItem.searchController = nil
+        } else if coordinator.settings.isSearchEnabled && navigationItem.searchController != nil {
+            // Update existing search controller for lyrics search mode
+            updateSearchControllerPlaceholder()
         }
         
         // Update drag and drop
@@ -2095,6 +2135,30 @@ class MainViewController: UIViewController {
         }
     }
     
+    private func setupSearchController() {
+        let searchController = UISearchController(searchResultsController: nil)
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        updateSearchControllerPlaceholder()
+        searchController.searchBar.accessibilityTraits = .searchField
+        navigationItem.searchController = searchController
+        definesPresentationContext = true
+    }
+    
+    private func updateSearchControllerPlaceholder() {
+        guard let searchController = navigationItem.searchController else { return }
+        
+        if coordinator.settings.isLyricsSearchEnabled {
+            searchController.searchBar.placeholder = "Search lyrics and text content"
+            searchController.searchBar.accessibilityLabel = "Search lyrics and text content"
+            print("🎵 [MainVC] Search mode: LYRICS SEARCH")
+        } else {
+            searchController.searchBar.placeholder = "Search files and folders"
+            searchController.searchBar.accessibilityLabel = "Search files and folders"
+            print("🔍 [MainVC] Search mode: FILE SEARCH")
+        }
+    }
+    
     private func setupUI() {
         title = "SambaPlay"
         view.backgroundColor = .systemBackground
@@ -2104,14 +2168,7 @@ class MainViewController: UIViewController {
         // Setup search controller (if enabled in settings)
         if coordinator.settings.isSearchEnabled {
             print("🔍 [MainVC] Setting up search controller - search is ENABLED")
-            let searchController = UISearchController(searchResultsController: nil)
-            searchController.searchResultsUpdater = self
-            searchController.obscuresBackgroundDuringPresentation = false
-            searchController.searchBar.placeholder = "Search files and folders"
-            searchController.searchBar.accessibilityLabel = "Search files and folders"
-            searchController.searchBar.accessibilityTraits = .searchField
-            navigationItem.searchController = searchController
-            definesPresentationContext = true
+            setupSearchController()
         } else {
             print("🔍 [MainVC] Search controller disabled in settings")
             navigationItem.searchController = nil
@@ -2622,30 +2679,69 @@ extension MainViewController: UISearchResultsUpdating {
         
         if searchText.isEmpty {
             isSearching = false
+            isLyricsSearching = false
             currentFiles = allFiles
+            tableView.reloadData()
         } else {
             isSearching = true
-            let filteredFiles = allFiles.filter { file in
-                file.name.localizedCaseInsensitiveContains(searchText)
-            }
             
-            // Apply search scope filter based on settings
-            switch coordinator.settings.searchScopeIncludes {
-            case .all:
-                print("🔍 [Search] Applying ALL FILES scope - showing \(filteredFiles.count) results")
-                currentFiles = filteredFiles
-            case .audioOnly:
-                let audioFiles = filteredFiles.filter { $0.isAudioFile }
-                print("🔍 [Search] Applying AUDIO ONLY scope - showing \(audioFiles.count) results")
-                currentFiles = audioFiles
-            case .textOnly:
-                let textFiles = filteredFiles.filter { $0.isTextFile }
-                print("🔍 [Search] Applying TEXT ONLY scope - showing \(textFiles.count) results")
-                currentFiles = textFiles
+            if coordinator.settings.isLyricsSearchEnabled {
+                // Lyrics search mode - search within text file contents
+                performLyricsSearch(searchText)
+            } else {
+                // Regular file name search
+                performFileNameSearch(searchText)
             }
+        }
+    }
+    
+    private func performFileNameSearch(_ searchText: String) {
+        isLyricsSearching = false
+        let filteredFiles = allFiles.filter { file in
+            file.name.localizedCaseInsensitiveContains(searchText)
+        }
+        
+        // Apply search scope filter based on settings
+        switch coordinator.settings.searchScopeIncludes {
+        case .all:
+            print("🔍 [Search] Applying ALL FILES scope - showing \(filteredFiles.count) results")
+            currentFiles = filteredFiles
+        case .audioOnly:
+            let audioFiles = filteredFiles.filter { $0.isAudioFile }
+            print("🔍 [Search] Applying AUDIO ONLY scope - showing \(audioFiles.count) results")
+            currentFiles = audioFiles
+        case .textOnly:
+            let textFiles = filteredFiles.filter { $0.isTextFile }
+            print("🔍 [Search] Applying TEXT ONLY scope - showing \(textFiles.count) results")
+            currentFiles = textFiles
         }
         
         tableView.reloadData()
+    }
+    
+    private func performLyricsSearch(_ searchText: String) {
+        isLyricsSearching = true
+        print("🎵 [Search] Performing lyrics search for: '\(searchText)'")
+        
+        coordinator.networkService.searchInTextFiles(query: searchText) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                switch result {
+                case .success(let matchingFiles):
+                    print("🎵 [Search] Lyrics search completed - found \(matchingFiles.count) matches")
+                    self.currentFiles = matchingFiles
+                    self.tableView.reloadData()
+                    
+                case .failure(let error):
+                    print("❌ [Search] Lyrics search failed: \(error)")
+                    self.currentFiles = []
+                    self.tableView.reloadData()
+                }
+                
+                self.isLyricsSearching = false
+            }
+        }
     }
 }
 
@@ -4606,6 +4702,7 @@ class SettingsViewController: UIViewController {
         case functionality = 2
         case playback = 3
         case about = 4
+        case logs = 5
         
         var title: String {
             switch self {
@@ -4614,6 +4711,7 @@ class SettingsViewController: UIViewController {
             case .functionality: return "Functionality"
             case .playback: return "Playback"
             case .about: return "About"
+            case .logs: return "Debug Logs"
             }
         }
         
@@ -4624,6 +4722,7 @@ class SettingsViewController: UIViewController {
             case .functionality: return "Configure search, drag & drop, and file handling"
             case .playback: return "Control audio playback behavior"
             case .about: return nil
+            case .logs: return "View live test output and debug information"
             }
         }
     }
@@ -4674,13 +4773,15 @@ class SettingsViewController: UIViewController {
     
     private enum FunctionalityRow: Int, CaseIterable {
         case search = 0
-        case searchScope = 1
-        case dragDrop = 2
-        case dragDropScope = 3
+        case lyricsSearch = 1
+        case searchScope = 2
+        case dragDrop = 3
+        case dragDropScope = 4
         
         var title: String {
             switch self {
             case .search: return "File Search"
+            case .lyricsSearch: return "Lyrics Search"
             case .searchScope: return "Search Scope"
             case .dragDrop: return "Drag & Drop"
             case .dragDropScope: return "Drag & Drop Files"
@@ -4690,6 +4791,7 @@ class SettingsViewController: UIViewController {
         var subtitle: String? {
             switch self {
             case .search: return "Enable real-time file search"
+            case .lyricsSearch: return "Search within text files instead of filenames"
             case .searchScope: return "What files to include in search"
             case .dragDrop: return "Import files via drag and drop"
             case .dragDropScope: return "Which file types to accept"
@@ -4716,18 +4818,43 @@ class SettingsViewController: UIViewController {
     private enum AboutRow: Int, CaseIterable {
         case version = 0
         case resetSettings = 1
+        case runTests = 2
         
         var title: String {
             switch self {
             case .version: return "Version"
             case .resetSettings: return "Reset All Settings"
+            case .runTests: return "Run Tests"
             }
         }
         
         var subtitle: String? {
             switch self {
-            case .version: return "SambaPlay v0.27.0"
+            case .version: return "SambaPlay v0.32.0"
             case .resetSettings: return "Restore default settings"
+            case .runTests: return "Run comprehensive test suite"
+            }
+        }
+    }
+    
+    private enum LogsRow: Int, CaseIterable {
+        case viewLogs = 0
+        case clearLogs = 1
+        case exportLogs = 2
+        
+        var title: String {
+            switch self {
+            case .viewLogs: return "View Live Logs"
+            case .clearLogs: return "Clear Logs"
+            case .exportLogs: return "Export Logs"
+            }
+        }
+        
+        var subtitle: String? {
+            switch self {
+            case .viewLogs: return "View real-time test output and debug information"
+            case .clearLogs: return "Clear all stored log entries"
+            case .exportLogs: return "Export logs to share or save"
             }
         }
     }
@@ -4819,6 +4946,7 @@ class SettingsViewController: UIViewController {
         coordinator.settings.isDarkModeEnabled = false
         coordinator.settings.isAccessibilityEnhanced = true
         coordinator.settings.isSearchEnabled = true
+        coordinator.settings.isLyricsSearchEnabled = false
         coordinator.settings.isDragDropEnabled = true
         coordinator.settings.isVoiceOverOptimized = true
         coordinator.settings.isDynamicTextEnabled = true
@@ -4836,6 +4964,55 @@ class SettingsViewController: UIViewController {
         let alert = UIAlertController(title: "Settings Reset", message: "All settings have been reset to their default values.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+    
+    private func runComprehensiveTests() {
+        let alert = UIAlertController(
+            title: "Run Tests",
+            message: "This will run a comprehensive test suite to verify all app functionality. The results will be logged and can be viewed in the Debug Logs section.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Run Tests", style: .default) { _ in
+            self.executeTestSuite()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        present(alert, animated: true)
+    }
+    
+    private func executeTestSuite() {
+        // Show loading indicator
+        let loadingAlert = UIAlertController(title: "Running Tests", message: "Please wait while tests are executed...", preferredStyle: .alert)
+        present(loadingAlert, animated: true)
+        
+        // Run tests on background queue
+        DispatchQueue.global(qos: .userInitiated).async {
+            let testHelper = TestingHelper.shared
+            
+            // Run all tests
+            testHelper.runAllTests()
+            testHelper.testAppIntegration()
+            testHelper.testFileSystemOperations()
+            testHelper.testPerformance()
+            
+            // Return to main queue for UI updates
+            DispatchQueue.main.async {
+                loadingAlert.dismiss(animated: true) {
+                    let alert = UIAlertController(
+                        title: "Tests Completed",
+                        message: "All tests have been executed successfully! View the results in Debug Logs → View Live Logs.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "View Logs", style: .default) { _ in
+                        self.showLiveLogsViewer()
+                    })
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
+                }
+            }
+        }
     }
 }
 
@@ -4859,6 +5036,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return PlaybackRow.allCases.count
         case .about:
             return AboutRow.allCases.count
+        case .logs:
+            return LogsRow.allCases.count
         }
     }
     
@@ -4886,6 +5065,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             return configurePlaybackCell(for: indexPath)
         case .about:
             return configureAboutCell(for: indexPath)
+        case .logs:
+            return configureLogsCell(for: indexPath)
         }
     }
     
@@ -4898,6 +5079,16 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .about:
             if indexPath.row == AboutRow.resetSettings.rawValue {
                 showResetConfirmation()
+            } else if indexPath.row == AboutRow.runTests.rawValue {
+                runComprehensiveTests()
+            }
+        case .logs:
+            if indexPath.row == LogsRow.viewLogs.rawValue {
+                showLiveLogsViewer()
+            } else if indexPath.row == LogsRow.clearLogs.rawValue {
+                clearAllLogs()
+            } else if indexPath.row == LogsRow.exportLogs.rawValue {
+                exportLogs()
             }
         default:
             break
@@ -5036,6 +5227,17 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             }
             return cell
             
+        case .lyricsSearch:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SwitchCell", for: indexPath) as! SwitchTableViewCell
+            cell.configure(
+                title: row.title,
+                subtitle: row.subtitle,
+                isOn: coordinator.settings.isLyricsSearchEnabled
+            ) { [weak self] isOn in
+                self?.coordinator.settings.setLyricsSearchEnabled(isOn)
+            }
+            return cell
+            
         case .searchScope:
             let cell = tableView.dequeueReusableCell(withIdentifier: "SegmentedCell", for: indexPath) as! SegmentedTableViewCell
             cell.configure(
@@ -5112,9 +5314,83 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .resetSettings:
             cell.accessoryType = .disclosureIndicator
             cell.textLabel?.textColor = .systemRed
+        case .runTests:
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemBlue
         }
         
         return cell
+    }
+    
+    private func configureLogsCell(for indexPath: IndexPath) -> UITableViewCell {
+        guard let row = LogsRow(rawValue: indexPath.row) else {
+            return UITableViewCell()
+        }
+        
+        let cell = tableView.dequeueReusableCell(withIdentifier: "SettingCell", for: indexPath)
+        cell.textLabel?.text = row.title
+        cell.detailTextLabel?.text = row.subtitle
+        
+        switch row {
+        case .viewLogs:
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemBlue
+        case .clearLogs:
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemOrange
+        case .exportLogs:
+            cell.accessoryType = .disclosureIndicator
+            cell.textLabel?.textColor = .systemGreen
+        }
+        
+        return cell
+    }
+    
+    private func showLiveLogsViewer() {
+        let logsViewController = LogsViewController()
+        let navController = UINavigationController(rootViewController: logsViewController)
+        present(navController, animated: true)
+    }
+    
+    private func clearAllLogs() {
+        let alert = UIAlertController(
+            title: "Clear All Logs",
+            message: "Are you sure you want to clear all stored log entries? This action cannot be undone.",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { _ in
+            AppLogger.shared.clearLogs()
+            
+            let confirmAlert = UIAlertController(title: "Logs Cleared", message: "All log entries have been cleared.", preferredStyle: .alert)
+            confirmAlert.addAction(UIAlertAction(title: "OK", style: .default))
+            self.present(confirmAlert, animated: true)
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+    
+    private func exportLogs() {
+        let logs = AppLogger.shared.exportLogs()
+        
+        if logs.isEmpty {
+            let alert = UIAlertController(title: "No Logs", message: "There are no logs to export.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        
+        let activityViewController = UIActivityViewController(activityItems: [logs], applicationActivities: nil)
+        
+        // For iPad
+        if let popover = activityViewController.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        
+        present(activityViewController, animated: true)
     }
 }
 
@@ -5260,5 +5536,225 @@ class SegmentedTableViewCell: UITableViewCell {
 extension Array {
     subscript(safe index: Int) -> Element? {
         return indices.contains(index) ? self[index] : nil
+    }
+}
+
+// MARK: - Live Logs Viewer
+class LogsViewController: UIViewController {
+    private let logger = AppLogger.shared
+    private var cancellables = Set<AnyCancellable>()
+    
+    private lazy var tableView: UITableView = {
+        let table = UITableView(frame: .zero, style: .plain)
+        table.translatesAutoresizingMaskIntoConstraints = false
+        table.delegate = self
+        table.dataSource = self
+        table.register(LogTableViewCell.self, forCellReuseIdentifier: "LogCell")
+        table.rowHeight = UITableView.automaticDimension
+        table.estimatedRowHeight = 60
+        table.separatorInset = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
+        return table
+    }()
+    
+    private lazy var autoScrollButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setTitle("Auto-Scroll", for: .normal)
+        button.setTitleColor(.white, for: .normal)
+        button.backgroundColor = .systemBlue
+        button.layer.cornerRadius = 20
+        button.addTarget(self, action: #selector(toggleAutoScroll), for: .touchUpInside)
+        return button
+    }()
+    
+    private var autoScrollEnabled = true
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupUI()
+        setupBindings()
+    }
+    
+    private func setupUI() {
+        title = "Live Logs"
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done,
+            target: self,
+            action: #selector(dismissLogs)
+        )
+        
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "Clear",
+            style: .plain,
+            target: self,
+            action: #selector(clearLogs)
+        )
+        
+        view.addSubview(tableView)
+        view.addSubview(autoScrollButton)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            
+            autoScrollButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            autoScrollButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            autoScrollButton.widthAnchor.constraint(equalToConstant: 100),
+            autoScrollButton.heightAnchor.constraint(equalToConstant: 40)
+        ])
+    }
+    
+    private func setupBindings() {
+        logger.$logs
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.tableView.reloadData()
+                if self?.autoScrollEnabled == true {
+                    self?.scrollToBottom()
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func scrollToBottom() {
+        guard !logger.logs.isEmpty else { return }
+        
+        let lastIndexPath = IndexPath(row: logger.logs.count - 1, section: 0)
+        tableView.scrollToRow(at: lastIndexPath, at: .bottom, animated: true)
+    }
+    
+    @objc private func dismissLogs() {
+        dismiss(animated: true)
+    }
+    
+    @objc private func clearLogs() {
+        logger.clearLogs()
+    }
+    
+    @objc private func toggleAutoScroll() {
+        autoScrollEnabled.toggle()
+        
+        let title = autoScrollEnabled ? "Auto-Scroll" : "Manual"
+        let backgroundColor: UIColor = autoScrollEnabled ? .systemBlue : .systemGray
+        
+        autoScrollButton.setTitle(title, for: .normal)
+        autoScrollButton.backgroundColor = backgroundColor
+        
+        if autoScrollEnabled {
+            scrollToBottom()
+        }
+    }
+}
+
+// MARK: - LogsViewController Table View
+extension LogsViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return logger.logs.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "LogCell", for: indexPath) as! LogTableViewCell
+        let logEntry = logger.logs[indexPath.row]
+        cell.configure(with: logEntry)
+        return cell
+    }
+}
+
+// MARK: - Custom Log Table View Cell
+class LogTableViewCell: UITableViewCell {
+    private let timestampLabel = UILabel()
+    private let levelLabel = UILabel()
+    private let messageLabel = UILabel()
+    private let containerView = UIView()
+    
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        selectionStyle = .none
+        
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.backgroundColor = .secondarySystemBackground
+        containerView.layer.cornerRadius = 8
+        containerView.layer.masksToBounds = true
+        
+        timestampLabel.translatesAutoresizingMaskIntoConstraints = false
+        timestampLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        timestampLabel.textColor = .secondaryLabel
+        
+        levelLabel.translatesAutoresizingMaskIntoConstraints = false
+        levelLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        levelLabel.textAlignment = .center
+        levelLabel.layer.cornerRadius = 4
+        levelLabel.layer.masksToBounds = true
+        
+        messageLabel.translatesAutoresizingMaskIntoConstraints = false
+        messageLabel.font = .systemFont(ofSize: 14)
+        messageLabel.textColor = .label
+        messageLabel.numberOfLines = 0
+        
+        contentView.addSubview(containerView)
+        containerView.addSubview(timestampLabel)
+        containerView.addSubview(levelLabel)
+        containerView.addSubview(messageLabel)
+        
+        NSLayoutConstraint.activate([
+            containerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            containerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            containerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            containerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            
+            timestampLabel.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 8),
+            timestampLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            
+            levelLabel.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 8),
+            levelLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
+            levelLabel.widthAnchor.constraint(equalToConstant: 80),
+            levelLabel.heightAnchor.constraint(equalToConstant: 20),
+            
+            messageLabel.topAnchor.constraint(equalTo: timestampLabel.bottomAnchor, constant: 8),
+            messageLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            messageLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
+            messageLabel.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -8)
+        ])
+    }
+    
+    func configure(with logEntry: LogEntry) {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        timestampLabel.text = formatter.string(from: logEntry.timestamp)
+        
+        levelLabel.text = logEntry.level.rawValue.uppercased()
+        messageLabel.text = logEntry.message
+        
+        // Color coding based on log level
+        switch logEntry.level {
+        case .debug:
+            levelLabel.backgroundColor = .systemGray
+            levelLabel.textColor = .white
+        case .info:
+            levelLabel.backgroundColor = .systemBlue
+            levelLabel.textColor = .white
+        case .warning:
+            levelLabel.backgroundColor = .systemOrange
+            levelLabel.textColor = .white
+        case .error:
+            levelLabel.backgroundColor = .systemRed
+            levelLabel.textColor = .white
+        case .success:
+            levelLabel.backgroundColor = .systemGreen
+            levelLabel.textColor = .white
+        }
     }
 } 
