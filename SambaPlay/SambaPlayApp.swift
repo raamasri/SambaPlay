@@ -3472,7 +3472,29 @@ class MainViewController: UIViewController {
         coordinator.networkService.$currentPath
             .receive(on: DispatchQueue.main)
             .sink { [weak self] path in
-                self?.pathLabel.text = path.isEmpty ? "No path" : path
+                self?.updatePathDisplay(path)
+            }
+            .store(in: &cancellables)
+        
+        // Bind to current server and folder for enhanced connection display
+        coordinator.networkService.$currentServer
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] server in
+                self?.updateConnectionDisplay()
+            }
+            .store(in: &cancellables)
+        
+        coordinator.networkService.$currentFolder
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] folder in
+                self?.updateConnectionDisplay()
+            }
+            .store(in: &cancellables)
+        
+        coordinator.networkService.$isLocalMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isLocal in
+                self?.updateConnectionDisplay()
             }
             .store(in: &cancellables)
         
@@ -3522,11 +3544,72 @@ class MainViewController: UIViewController {
             connectionStatusLabel.text = "Connecting..."
             connectionStatusLabel.textColor = .systemOrange
         case .connected:
-            connectionStatusLabel.text = "Connected"
-            connectionStatusLabel.textColor = .systemGreen
+            updateConnectionDisplay()
         case .error(let message):
             connectionStatusLabel.text = "Error: \(message)"
             connectionStatusLabel.textColor = .systemRed
+        }
+    }
+    
+    private func updateConnectionDisplay() {
+        let networkService = coordinator.networkService
+        
+        // Only update if we're actually connected
+        guard networkService.connectionState == .connected else { return }
+        
+        if networkService.isLocalMode {
+            // Local mode - show folder or local files
+            if let folder = networkService.currentFolder {
+                connectionStatusLabel.text = "📁 \(folder.name)"
+                connectionStatusLabel.textColor = .systemBlue
+            } else {
+                connectionStatusLabel.text = "📱 Local Files"
+                connectionStatusLabel.textColor = .systemBlue
+            }
+        } else {
+            // Server mode - show server details
+            if let server = networkService.currentServer {
+                let serverIcon = server.name.lowercased().contains("demo") ? "🎭" : "🖥️"
+                connectionStatusLabel.text = "\(serverIcon) \(server.name)"
+                connectionStatusLabel.textColor = .systemGreen
+            } else {
+                connectionStatusLabel.text = "Connected"
+                connectionStatusLabel.textColor = .systemGreen
+            }
+        }
+    }
+    
+    private func updatePathDisplay(_ path: String) {
+        let networkService = coordinator.networkService
+        
+        if path.isEmpty {
+            pathLabel.text = "No path"
+            return
+        }
+        
+        // Show context-aware path information
+        if networkService.isLocalMode {
+            if let folder = networkService.currentFolder {
+                // Show relative path within the folder
+                if path == folder.name {
+                    pathLabel.text = "📁 Root"
+                } else {
+                    pathLabel.text = "📁 \(path)"
+                }
+            } else {
+                pathLabel.text = "📱 \(path)"
+            }
+        } else {
+            if let server = networkService.currentServer {
+                // Show server path with context
+                if path == "/" {
+                    pathLabel.text = "🖥️ Root Directory"
+                } else {
+                    pathLabel.text = "🖥️ \(path)"
+                }
+            } else {
+                pathLabel.text = path
+            }
         }
     }
     
