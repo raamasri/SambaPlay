@@ -328,30 +328,46 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func getRealDirectoryListing(path: String, server: String) async throws -> [SMBFileItem] {
-        print("📂 [SMB] Attempting real directory listing for path: \(path)")
+        print("📂 [SMB] Attempting real directory listing for path: \(path) on server: \(server)")
         
         // Prioritize native SMB access since we verified it works with the server
-        if let nativeItems = try? await tryNativeSMBAccess(path: path, server: server) {
+        print("🔄 [SMB] Trying native SMB access first...")
+        do {
+            let nativeItems = try await tryNativeSMBAccess(path: path, server: server)
             print("✅ [SMB] Got \(nativeItems.count) items via native SMB access")
             return nativeItems
+        } catch {
+            print("❌ [SMB] Native SMB access failed: \(error)")
         }
         
         // Try NetBIOS-style enumeration as backup
-        if let netbiosItems = try? await tryNetBIOSEnumeration(path: path, server: server) {
+        print("🔄 [SMB] Trying NetBIOS enumeration...")
+        do {
+            let netbiosItems = try await tryNetBIOSEnumeration(path: path, server: server)
             print("✅ [SMB] Got \(netbiosItems.count) items via NetBIOS enumeration")
             return netbiosItems
+        } catch {
+            print("❌ [SMB] NetBIOS enumeration failed: \(error)")
         }
         
         // Try HTTP directory listing as fallback
-        if let httpItems = try? await tryHTTPDirectoryListing(path: path, server: server) {
+        print("🔄 [SMB] Trying HTTP directory listing...")
+        do {
+            let httpItems = try await tryHTTPDirectoryListing(path: path, server: server)
             print("✅ [SMB] Got \(httpItems.count) items via HTTP")
             return httpItems
+        } catch {
+            print("❌ [SMB] HTTP directory listing failed: \(error)")
         }
         
         // Try alternative network scanning approaches
-        if let altItems = try? await tryAlternativeNetworkAccess(path: path, server: server) {
+        print("🔄 [SMB] Trying alternative network access...")
+        do {
+            let altItems = try await tryAlternativeNetworkAccess(path: path, server: server)
             print("✅ [SMB] Got \(altItems.count) items via alternative access")
             return altItems
+        } catch {
+            print("❌ [SMB] Alternative network access failed: \(error)")
         }
         
         print("⚠️ [SMB] All real directory listing methods failed, using known shares")
@@ -837,17 +853,18 @@ class SMBConnectionManager: ObservableObject {
     private func tryNativeSMBAccess(path: String, server: String) async throws -> [SMBFileItem] {
         print("📂 [SMB] Trying native SMB mounting for \(path) on server \(server)")
         
-        // Use URLSession with proper SMB URLs that target the specific server
-        // This is safer than FileManager which might resolve to local paths
+        // iOS has limited SMB URL support compared to macOS
+        // Let's try a more direct FileManager approach with careful error handling
         var items: [SMBFileItem] = []
         
-        // For root path, try to enumerate known shares by mounting them
+        // For root path, try to enumerate known shares by testing them individually  
         if path == "/" || path.isEmpty {
             print("📂 [SMB] Enumerating shares by testing actual SMB connections")
             
             let knownShares = ["BACKUP1", "BACKUP2", "BACKUPA", "BACKUPP", "UPLOAD"]
             
             for shareName in knownShares {
+                print("🔍 [SMB] Testing share: \(shareName)")
                 if await testSMBShareAccess(shareName: shareName, server: server) {
                     let shareItem = SMBFileItem(
                         name: shareName,
@@ -858,59 +875,67 @@ class SMBConnectionManager: ObservableObject {
                     )
                     items.append(shareItem)
                     print("✅ [SMB] Confirmed SMB share exists: \(shareName)")
+                } else {
+                    print("❌ [SMB] Share \(shareName) not accessible")
                 }
             }
             
             if !items.isEmpty {
+                print("📋 [SMB] Native SMB found \(items.count) shares")
                 return items
+            } else {
+                print("❌ [SMB] No shares found via native SMB")
+                throw SMBError.serverUnreachable
             }
         } else {
             // For subdirectories, try to access the actual share content
+            print("📂 [SMB] Accessing subdirectory content for \(path)")
             return try await accessSMBShareContent(path: path, server: server)
         }
-        
-        throw SMBError.serverUnreachable
     }
     
     private func testSMBShareAccess(shareName: String, server: String) async -> Bool {
         print("🔍 [SMB] Testing actual SMB share access for '\(shareName)' on \(server)")
         
-        // Try to create a temporary URL for the SMB share
+        // iOS URLSession doesn't support SMB URLs well, so let's use FileManager directly
+        // but with careful error handling to avoid resolving to local paths
         let smbURLString = "smb://guest@\(server)/\(shareName)"
+        print("🌐 [SMB] Testing URL: \(smbURLString)")
+        
         guard let smbURL = URL(string: smbURLString) else {
             print("❌ [SMB] Invalid SMB URL: \(smbURLString)")
             return false
         }
         
         return await withCheckedContinuation { continuation in
-            // Use URLSession to test if the share is accessible
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 5.0
-            let session = URLSession(configuration: config)
-            
-            // Create a simple HEAD request to test accessibility
-            var request = URLRequest(url: smbURL)
-            request.httpMethod = "HEAD"
-            
-            let task = session.dataTask(with: request) { data, response, error in
-                if let error = error {
-                    print("⚠️ [SMB] Share test failed for \(shareName): \(error.localizedDescription)")
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    // Try to check if the SMB URL is reachable
+                    let reachable = try smbURL.checkResourceIsReachable()
+                    print("📡 [SMB] Share \(shareName) reachability test: \(reachable)")
+                    
+                    if reachable {
+                        // Double-check by trying to get resource values
+                        let resourceValues = try smbURL.resourceValues(forKeys: [.isDirectoryKey])
+                        let isDirectory = resourceValues.isDirectory ?? true
+                        print("✅ [SMB] Share \(shareName) confirmed accessible, isDirectory: \(isDirectory)")
+                        continuation.resume(returning: true)
+                    } else {
+                        print("❌ [SMB] Share \(shareName) not reachable")
+                        continuation.resume(returning: false)
+                    }
+                } catch {
+                    print("⚠️ [SMB] Share test error for \(shareName): \(error)")
+                    
+                    // Log the specific error type to understand what's happening
+                    if let nsError = error as NSError? {
+                        print("📋 [SMB] Error domain: \(nsError.domain), code: \(nsError.code)")
+                        print("📋 [SMB] Error description: \(nsError.localizedDescription)")
+                    }
+                    
                     continuation.resume(returning: false)
-                    return
-                }
-                
-                if let httpResponse = response as? HTTPURLResponse {
-                    let success = httpResponse.statusCode < 400
-                    print("📡 [SMB] Share test for \(shareName): status \(httpResponse.statusCode), success: \(success)")
-                    continuation.resume(returning: success)
-                } else {
-                    // For SMB URLs, we might not get HTTP response but still be successful
-                    print("✅ [SMB] Share \(shareName) appears accessible (non-HTTP response)")
-                    continuation.resume(returning: true)
                 }
             }
-            
-            task.resume()
         }
     }
     
@@ -919,7 +944,10 @@ class SMBConnectionManager: ObservableObject {
         
         // Extract share name from path
         let pathComponents = path.components(separatedBy: "/").filter { !$0.isEmpty }
+        print("📋 [SMB] Path components: \(pathComponents)")
+        
         guard let shareName = pathComponents.first else {
+            print("❌ [SMB] No share name found in path: \(path)")
             throw SMBError.invalidPath
         }
         
@@ -927,9 +955,11 @@ class SMBConnectionManager: ObservableObject {
         let fullSMBPath = subPath.isEmpty ? shareName : "\(shareName)/\(subPath)"
         
         let smbURLString = "smb://guest@\(server)/\(fullSMBPath)"
-        print("🌐 [SMB] Accessing: \(smbURLString)")
+        print("🌐 [SMB] Constructed SMB URL: \(smbURLString)")
+        print("📂 [SMB] Share: \(shareName), SubPath: '\(subPath)'")
         
         guard let smbURL = URL(string: smbURLString) else {
+            print("❌ [SMB] Invalid SMB URL construction: \(smbURLString)")
             throw SMBError.invalidPath
         }
         
