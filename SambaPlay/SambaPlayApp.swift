@@ -3077,12 +3077,34 @@ class MainViewController: UIViewController {
         return label
     }()
     
+    private lazy var nowPlayingSkipBackButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "gobackward.15", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(nowPlayingSkipBackTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Skip back 15 seconds"
+        button.accessibilityTraits = .button
+        button.tintColor = .systemBlue
+        return button
+    }()
+    
     private lazy var nowPlayingPlayPauseButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
         button.addTarget(self, action: #selector(nowPlayingPlayPauseTapped), for: .touchUpInside)
         button.accessibilityLabel = "Play"
+        button.accessibilityTraits = .button
+        button.tintColor = .systemBlue
+        return button
+    }()
+    
+    private lazy var nowPlayingSkipForwardButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "goforward.30", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(nowPlayingSkipForwardTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Skip forward 30 seconds"
         button.accessibilityTraits = .button
         button.tintColor = .systemBlue
         return button
@@ -3310,7 +3332,9 @@ class MainViewController: UIViewController {
         // Setup now playing container
         nowPlayingContainer.addSubview(nowPlayingContentView)
         nowPlayingContentView.addSubview(trackTitleLabel)
+        nowPlayingContentView.addSubview(nowPlayingSkipBackButton)
         nowPlayingContentView.addSubview(nowPlayingPlayPauseButton)
+        nowPlayingContentView.addSubview(nowPlayingSkipForwardButton)
         nowPlayingContentView.addSubview(nowPlayingChevronButton)
         nowPlayingContainer.addSubview(nowPlayingProgressView)
         nowPlayingContainer.addSubview(nowPlayingTimeLabel)
@@ -3373,13 +3397,25 @@ class MainViewController: UIViewController {
             // Track Title Label
             trackTitleLabel.leadingAnchor.constraint(equalTo: nowPlayingContentView.leadingAnchor),
             trackTitleLabel.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
-            trackTitleLabel.trailingAnchor.constraint(equalTo: nowPlayingPlayPauseButton.leadingAnchor, constant: -12),
+            trackTitleLabel.trailingAnchor.constraint(equalTo: nowPlayingSkipBackButton.leadingAnchor, constant: -12),
+            
+            // Skip Back Button
+            nowPlayingSkipBackButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
+            nowPlayingSkipBackButton.trailingAnchor.constraint(equalTo: nowPlayingPlayPauseButton.leadingAnchor, constant: -8),
+            nowPlayingSkipBackButton.widthAnchor.constraint(equalToConstant: 28),
+            nowPlayingSkipBackButton.heightAnchor.constraint(equalToConstant: 28),
             
             // Play/Pause Button
             nowPlayingPlayPauseButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
-            nowPlayingPlayPauseButton.trailingAnchor.constraint(equalTo: nowPlayingChevronButton.leadingAnchor, constant: -8),
+            nowPlayingPlayPauseButton.trailingAnchor.constraint(equalTo: nowPlayingSkipForwardButton.leadingAnchor, constant: -8),
             nowPlayingPlayPauseButton.widthAnchor.constraint(equalToConstant: 32),
             nowPlayingPlayPauseButton.heightAnchor.constraint(equalToConstant: 32),
+            
+            // Skip Forward Button
+            nowPlayingSkipForwardButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
+            nowPlayingSkipForwardButton.trailingAnchor.constraint(equalTo: nowPlayingChevronButton.leadingAnchor, constant: -8),
+            nowPlayingSkipForwardButton.widthAnchor.constraint(equalToConstant: 28),
+            nowPlayingSkipForwardButton.heightAnchor.constraint(equalToConstant: 28),
             
             // Chevron Button
             nowPlayingChevronButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
@@ -3758,6 +3794,33 @@ class MainViewController: UIViewController {
         default:
             print("🎮 [MainVC] Cannot play/pause in current state: \(coordinator.audioPlayer.playerState)")
             break
+        }
+    }
+    
+    @objc private func nowPlayingSkipBackTapped() {
+        print("⏪ [MainVC] Now Playing Skip Back button tapped")
+        let currentTime = coordinator.audioPlayer.currentTime
+        let newTime = max(0, currentTime - 15.0)
+        coordinator.audioPlayer.seek(to: newTime)
+        
+        // Haptic feedback if enabled
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred()
+        }
+    }
+    
+    @objc private func nowPlayingSkipForwardTapped() {
+        print("⏩ [MainVC] Now Playing Skip Forward button tapped")
+        let currentTime = coordinator.audioPlayer.currentTime
+        let duration = coordinator.audioPlayer.duration
+        let newTime = min(duration, currentTime + 30.0)
+        coordinator.audioPlayer.seek(to: newTime)
+        
+        // Haptic feedback if enabled
+        if coordinator.settings.isHapticsEnabled {
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.impactOccurred()
         }
     }
     
