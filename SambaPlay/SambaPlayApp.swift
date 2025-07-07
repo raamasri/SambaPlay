@@ -3731,6 +3731,48 @@ class MainViewController: UIViewController {
             self.showAddServerDialog()
         })
         
+        // Quick test button for user's specific server
+        alert.addAction(UIAlertAction(title: "🧪 Test fads1005d8 (192.168.1.17)", style: .default) { _ in
+            let server = SambaServer(
+                name: "fads1005d8",
+                host: "192.168.1.17",
+                port: 445,
+                username: nil,
+                password: nil
+            )
+            
+            // Add to saved servers if not already there
+            if !self.coordinator.networkService.savedServers.contains(where: { $0.host == server.host }) {
+                self.coordinator.networkService.addServer(server)
+            }
+            
+            Task {
+                print("🧪 [UI] Testing user's specific server: fads1005d8 at 192.168.1.17")
+                await self.coordinator.networkService.connect(to: server, username: "guest", password: "")
+                
+                // Show connection result
+                DispatchQueue.main.async {
+                    let state = self.coordinator.networkService.connectionState
+                    print("📊 [UI] Test connection result: \\(state)")
+                    
+                    switch state {
+                    case .connected:
+                        let successAlert = UIAlertController(title: "🎉 Test Successful!", message: "Connected to fads1005d8 at 192.168.1.17", preferredStyle: .alert)
+                        successAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(successAlert, animated: true)
+                    case .error(let message):
+                        let errorAlert = UIAlertController(title: "❌ Test Failed", message: "Could not connect to fads1005d8: \\(message)", preferredStyle: .alert)
+                        errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(errorAlert, animated: true)
+                    default:
+                        let warningAlert = UIAlertController(title: "⚠️ Test Inconclusive", message: "Connection state: \\(state)", preferredStyle: .alert)
+                        warningAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(warningAlert, animated: true)
+                    }
+                }
+            }
+        })
+        
         alert.addAction(UIAlertAction(title: "Manage Servers", style: .default) { _ in
             self.showServerManagement()
         })

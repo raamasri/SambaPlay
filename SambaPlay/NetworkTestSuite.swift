@@ -229,6 +229,61 @@ class NetworkTestSuite: ObservableObject {
         return true
     }
     
+    // MARK: - Specific Server Tests
+    
+    func testUserSambaServer() async {
+        let testName = "User Samba Server Test (fads1005d8)"
+        
+        await runTest(name: testName) {
+            do {
+                // Test the specific server: fads1005d8 at 192.168.1.17
+                let server = SambaServer(
+                    name: "fads1005d8",
+                    host: "192.168.1.17",
+                    port: 445,
+                    username: nil,  // Anonymous access
+                    password: nil
+                )
+                
+                // Test basic connectivity first using networkErrorHandler
+                let reachable = await self.networkErrorHandler.testConnection(
+                    to: server.host,
+                    port: Int(server.port),
+                    timeout: 10.0
+                )
+                
+                guard reachable else {
+                    return .failed("Server \(server.host) is not reachable on port \(server.port)")
+                }
+                
+                // Test SMB connection with guest credentials
+                try await self.smbConnection.connect(
+                    to: server.host,
+                    port: server.port,
+                    username: "guest",
+                    password: "",
+                    domain: nil
+                )
+                
+                // Wait a bit for connection to establish
+                try await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+                
+                let isConnected = self.smbConnection.isConnected
+                
+                if isConnected {
+                    // Disconnect after successful test
+                    self.smbConnection.disconnect()
+                    return .passed("Successfully connected to \(server.name) (\(server.host)) as guest")
+                } else {
+                    return .failed("Failed to connect to \(server.name)")
+                }
+                
+            } catch {
+                return .failed("Test failed with error: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     // MARK: - Connectivity Tests
     private func runConnectivityTests(configuration: TestConfiguration) async {
         await runTest(name: "Network Connectivity Check") {

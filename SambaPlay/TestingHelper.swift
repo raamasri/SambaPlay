@@ -24,9 +24,65 @@ class TestingHelper {
         testBasicFunctionality()
         testFileExtensions()
         testNetworkingCapabilities()
+        testUserSambaServer() // Test user's specific server
         testAudioProcessing()
         
         print("✅ All tests completed successfully!")
+    }
+    
+    private func testUserSambaServer() {
+        print("🧪 Testing user's Samba server (fads1005d8 at 192.168.1.17)...")
+        
+        // Test server details
+        let serverName = "fads1005d8"
+        let serverHost = "192.168.1.17"
+        let serverPort: Int16 = 445
+        
+        print("📊 Server details:")
+        print("  Name: \(serverName)")
+        print("  Host: \(serverHost)")
+        print("  Port: \(serverPort)")
+        print("  Auth: Guest/Anonymous")
+        
+        // Test basic network connectivity
+        print("🔍 Testing basic connectivity...")
+        
+        // Create a simple socket test
+        let expectation = TestExpectation()
+        
+        DispatchQueue.global().async {
+            let success = self.testSocketConnection(host: serverHost, port: Int(serverPort))
+            print(success ? "✅ Socket connection successful" : "❌ Socket connection failed")
+            expectation.fulfill()
+        }
+        
+        expectation.wait(timeout: 10.0)
+        
+        print("✅ User Samba server test completed")
+    }
+    
+    private func testSocketConnection(host: String, port: Int) -> Bool {
+        // Simple socket connectivity test
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        
+        defer { close(sock) }
+        
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        
+        if inet_pton(AF_INET, host, &addr.sin_addr) <= 0 {
+            return false
+        }
+        
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        
+        return result == 0
     }
     
     private func testBasicFunctionality() {
