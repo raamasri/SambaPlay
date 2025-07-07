@@ -34,15 +34,18 @@ xcodebuild test -project SambaPlay.xcodeproj -scheme SambaPlay -destination 'pla
 
 ## Architecture Overview
 
-### Core Components
+### Core Application Structure
+
+**SambaPlayApp.swift** - The main application file containing most components in a consolidated architecture. This file contains all major view controllers, data models, and the audio player implementation.
 
 **SambaPlayCoordinator** - The main app coordinator following a coordinator pattern that manages dependencies and navigation flow. This is the central hub that connects all major components.
 
-**SimpleNetworkService** - Handles all network operations including:
-- Samba server connections (currently demo/mock implementation)
-- File browsing and navigation
-- Server management (add/remove/connect)
+**RealSMBNetworkService** - Handles all network operations including:
+- Real SMB server connections via SMBConnectionManager
+- File browsing and navigation with path history
+- Server management (add/remove/connect) with keychain credential storage
 - Local file system integration via UIDocumentPicker
+- Offline mode support and recent sources tracking
 
 **SimpleAudioPlayer** - Advanced audio playback engine using AVAudioEngine with:
 - Real audio playback for bundled sample files
@@ -87,6 +90,14 @@ xcodebuild test -project SambaPlay.xcodeproj -scheme SambaPlay -destination 'pla
 
 **SambaServer** - Server configuration model with connection parameters
 
+**LocalFolder** - Local folder bookmarks for quick access
+
+**RecentSource** - Recent server/folder connections for easy reconnection
+
+**PlaybackPosition** - Playback position memory for resuming tracks
+
+**AudioFormat** - Comprehensive audio format enum with metadata support
+
 **AudioPlayerState/NetworkConnectionState** - State management enums for UI updates
 
 ### Audio Pipeline
@@ -115,8 +126,13 @@ All UI is built programmatically using Auto Layout with:
 - Proper safe area handling
 - Accessibility considerations built-in
 
-### Demo/Mock Implementation
-Network functionality includes demo data structures for development and testing without requiring actual Samba servers.
+### Network Infrastructure
+The app includes comprehensive network infrastructure:
+- **SMBConnectionManager**: Handles SMB protocol connections and session management
+- **KeychainManager**: Secure credential storage for server authentication
+- **NetworkErrorHandler**: Centralized error handling for network operations
+- **OfflineModeManager**: Offline functionality and cached content management
+- **NetworkTestSuite**: Network testing utilities for debugging connectivity
 
 ## Testing Framework
 
@@ -139,13 +155,20 @@ The project includes a sample audio file (`Sample Song.mp3`) in the Resources fo
 ## Common Development Tasks
 
 When adding new audio features, follow the established pattern:
-1. Update the audio player model with new properties
-2. Add UI controls to `AudioSettingsViewController`
-3. Implement the audio processing in `SimpleAudioPlayer`
+1. Update the audio player model with new properties in `SambaPlayApp.swift`
+2. Add UI controls to `AudioSettingsViewController` within the main file
+3. Implement the audio processing in `SimpleAudioPlayer` class
 4. Wire up Combine bindings for reactive updates
 
 When adding network features:
-1. Extend `SimpleNetworkService` with new methods
-2. Update the demo data structures if needed
-3. Add corresponding UI in `MainViewController`
+1. Extend `RealSMBNetworkService` with new methods
+2. Add corresponding support in `SMBConnectionManager` if needed
+3. Update UI in `MainViewController` within the main file
 4. Handle state updates through published properties
+5. Consider offline functionality through `OfflineModeManager`
+
+When debugging network connectivity:
+1. Use `NetworkTestSuite` for connectivity testing
+2. Check `NetworkErrorHandler` for error patterns
+3. Review `AppLogger` output for detailed logs
+4. Test with both real SMB servers and local files

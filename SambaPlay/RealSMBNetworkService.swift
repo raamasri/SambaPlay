@@ -367,13 +367,33 @@ class RealSMBNetworkService: ObservableObject {
     
     private func loadSMBFiles(for path: String) async {
         do {
+            print("📂 [RealSMBNetworkService] Attempting to load SMB files from: \(path)")
+            
             let smbItems = try await networkErrorHandler.executeWithRetry {
                 try await self.smbConnection.listDirectory(at: path)
             }
             
+            print("📋 [RealSMBNetworkService] Retrieved \(smbItems.count) raw SMB items")
+            
+            // If no items found and we're at root, show empty state
+            if smbItems.isEmpty && (path == "/" || path.isEmpty) {
+                print("🔍 [RealSMBNetworkService] No items found at root path")
+                
+                DispatchQueue.main.async {
+                    self.currentFiles = []
+                    self.connectionState = .connected
+                }
+                return
+            }
+            
             // Convert SMB items to MediaFile objects
-            let mediaFiles = smbItems.map { item in
-                MediaFile(
+            let mediaFiles = smbItems.compactMap { item -> MediaFile? in
+                // Filter out system files and hidden files
+                if item.name.hasPrefix(".") || item.name.hasPrefix("$") {
+                    return nil
+                }
+                
+                return MediaFile(
                     name: item.name,
                     path: item.path,
                     size: item.size ?? 0,
@@ -391,14 +411,20 @@ class RealSMBNetworkService: ObservableObject {
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
             
+            print("✅ [RealSMBNetworkService] Processed \(sortedFiles.count) media files")
+            
             DispatchQueue.main.async {
                 self.currentFiles = sortedFiles
+                self.connectionState = .connected
+                print("🔄 [RealSMBNetworkService] Updated currentFiles property with \(sortedFiles.count) files")
+                print("🔄 [RealSMBNetworkService] File names: \(sortedFiles.map { $0.name })")
             }
             
             // Cache directory listing for offline use
             offlineManager.cacheDirectoryListing(smbItems, for: path)
             
         } catch {
+            print("❌ [RealSMBNetworkService] Failed to load SMB files: \(error)")
             // Handle error with fallback to offline mode
             await handleConnectionError(error, for: path)
         }

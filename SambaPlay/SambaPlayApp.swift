@@ -3450,9 +3450,13 @@ class MainViewController: UIViewController {
             .sink { [weak self] files in
                 guard let self = self else { return }
                 
+                print("📱 [MainViewController] Received \(files.count) files from network service")
+                print("📱 [MainViewController] File names: \(files.map { $0.name })")
+                
                 self.allFiles = files
                 if self.isSearching == false {
                     self.currentFiles = files
+                    print("📱 [MainViewController] Updated local currentFiles with \(files.count) files")
                 }
                 
                 // Update virtual scrolling manager
@@ -3465,7 +3469,9 @@ class MainViewController: UIViewController {
                     self.coordinator.imageCache.clearMemoryCache()
                 }
                 
+                print("📱 [MainViewController] About to reload table view")
                 self.tableView.reloadData()
+                print("📱 [MainViewController] Table view reloaded")
             }
             .store(in: &cancellables)
         
@@ -4051,6 +4057,7 @@ class MainViewController: UIViewController {
 // MARK: - Table View Data Source & Delegate
 extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        print("📱 [MainViewController] numberOfRowsInSection called, returning \(currentFiles.count) rows")
         return currentFiles.count
     }
     

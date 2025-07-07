@@ -10,13 +10,13 @@ import XCTest
 final class SambaPlayUITests: XCTestCase {
     
     var app: XCUIApplication!
-    
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launch()
     }
-    
+
     override func tearDownWithError() throws {
         app = nil
     }
