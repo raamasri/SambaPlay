@@ -617,24 +617,25 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func tryNetBIOSEnumeration(path: String, server: String) async throws -> [SMBFileItem] {
-        print("📂 [SMB] Trying NetBIOS-style enumeration for \(path)")
+        print("📂 [SMB] Trying NetBIOS-style enumeration for \(path) on server \(server)")
         
-        // Try to enumerate SMB shares using network requests to common SMB paths
-        // This mimics what smbclient or other SMB tools would do
+        // Ensure we're targeting the correct server, not local system
+        guard server != "localhost" && server != "127.0.0.1" && !server.isEmpty else {
+            print("⚠️ [SMB] Invalid server address: \(server)")
+            throw SMBError.serverUnreachable
+        }
         
         var discoveredItems: [SMBFileItem] = []
         
         // If we're at root, try to enumerate shares
         if path == "/" || path.isEmpty {
-            // Try common share names that often exist on SMB servers
-            let commonShares = [
-                "UPLOAD", "BACKUPP", "BACKUPA", "BACKUP2", "BACKUP1", // Your known shares
-                "Public", "Downloads", "Documents", "Music", "Videos", "Pictures", // Common defaults
-                "shared", "data", "files", "media", "storage", "home", "users" // Generic names
-            ]
+            print("📂 [SMB] Enumerating shares on server \(server)")
             
-            // Test each potential share by trying to access it
-            for shareName in commonShares {
+            // Your known shares - prioritize these since they're confirmed to exist
+            let knownShares = ["UPLOAD", "BACKUPP", "BACKUPA", "BACKUP2", "BACKUP1"]
+            
+            // Test known shares first
+            for shareName in knownShares {
                 if await testShareExists(shareName: shareName, server: server) {
                     let shareItem = SMBFileItem(
                         name: shareName,
@@ -644,22 +645,51 @@ class SMBConnectionManager: ObservableObject {
                         modifiedDate: Date()
                     )
                     discoveredItems.append(shareItem)
-                    print("✅ [SMB] Discovered share: \(shareName)")
+                    print("✅ [SMB] Confirmed known share: \(shareName) on \(server)")
+                }
+            }
+            
+            // If we found known shares, return them. Otherwise try common share names
+            if discoveredItems.isEmpty {
+                let commonShares = ["Public", "Downloads", "Documents", "Music", "Videos", "Pictures", "shared", "data", "files", "media", "storage", "home", "users"]
+                
+                for shareName in commonShares {
+                    if await testShareExists(shareName: shareName, server: server) {
+                        let shareItem = SMBFileItem(
+                            name: shareName,
+                            path: "/\(shareName)",
+                            isDirectory: true,
+                            size: nil,
+                            modifiedDate: Date()
+                        )
+                        discoveredItems.append(shareItem)
+                        print("✅ [SMB] Discovered common share: \(shareName) on \(server)")
+                        
+                        // Limit to avoid too many discoveries
+                        if discoveredItems.count >= 10 {
+                            break
+                        }
+                    }
                 }
             }
         } else {
-            // For subdirectories, try to probe for common file patterns
+            print("📂 [SMB] Probing directory contents for \(path) on server \(server)")
+            // For subdirectories, try to probe for contents
             discoveredItems = await probeDirectoryContents(path: path, server: server)
         }
         
         if !discoveredItems.isEmpty {
+            print("✅ [SMB] NetBIOS enumeration found \(discoveredItems.count) items on server \(server)")
             return discoveredItems
         }
         
+        print("⚠️ [SMB] NetBIOS enumeration found no items on server \(server)")
         throw SMBError.serverUnreachable
     }
     
     private func testShareExists(shareName: String, server: String) async -> Bool {
+        print("🔍 [SMB] Testing if share '\(shareName)' exists on server \(server)")
+        
         // Test if a share exists by trying to access it via different methods
         let testURLs = [
             "http://\(server)/\(shareName)",
@@ -673,22 +703,35 @@ class SMBConnectionManager: ObservableObject {
             
             do {
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 1.0 // Very fast test
+                request.timeoutInterval = 2.0 // Slightly longer for more reliable testing
                 request.httpMethod = "HEAD" // Just test if accessible
+                
+                // Add basic authentication
+                let authString = "guest:"
+                let authData = authString.data(using: .utf8)!
+                let base64Auth = authData.base64EncodedString()
+                request.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
                 
                 let (_, response) = try await URLSession.shared.data(for: request)
                 
                 if let httpResponse = response as? HTTPURLResponse {
-                    // Consider it exists if we get any response except 404
-                    if httpResponse.statusCode != 404 && httpResponse.statusCode < 500 {
+                    print("📡 [SMB] Response \(httpResponse.statusCode) for \(urlString)")
+                    
+                    // Consider it exists if we get any response except 404/403
+                    if httpResponse.statusCode == 200 || 
+                       httpResponse.statusCode == 301 || 
+                       httpResponse.statusCode == 302 {
+                        print("✅ [SMB] Share '\(shareName)' confirmed via \(urlString)")
                         return true
                     }
                 }
             } catch {
+                print("⚠️ [SMB] Test failed for \(urlString): \(error.localizedDescription)")
                 continue
             }
         }
         
+        print("❌ [SMB] Share '\(shareName)' not found on server \(server)")
         return false
     }
     
@@ -739,166 +782,29 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func tryNativeSMBAccess(path: String, server: String) async throws -> [SMBFileItem] {
-        print("📂 [SMB] Trying native iOS SMB access for \(path)")
+        print("📂 [SMB] Trying native iOS SMB access for \(path) on server \(server)")
         
-        // iOS 13+ supports native SMB access via FileManager with proper SMB URLs
-        guard #available(iOS 13.0, *) else {
-            print("⚠️ [SMB] Native SMB access requires iOS 13+")
-            throw SMBError.serverUnreachable
-        }
+        // iOS native SMB URLs often don't work as expected and can resolve to local paths
+        // Instead of using FileManager directly, let's focus on network-based approaches
+        print("⚠️ [SMB] Native SMB access via FileManager can resolve to local paths - skipping")
+        print("📍 [SMB] Server: \(server), Path: \(path)")
         
-        let fileManager = FileManager.default
-        var items: [SMBFileItem] = []
-        
-        // Try different SMB URL formats that iOS might support
-        let smbURLStrings = [
-            "smb://\(server)\(path)",
-            "smb://guest@\(server)\(path)",
-            "smb://\(server):445\(path)",
-            "cifs://\(server)\(path)",
-            "cifs://guest@\(server)\(path)"
-        ]
-        
-        for urlString in smbURLStrings {
-            guard let url = URL(string: urlString) else { continue }
-            
-            do {
-                print("📡 [SMB] Attempting native access to: \(urlString)")
-                
-                // Try to access the SMB URL directly
-                let resourceKeys: [URLResourceKey] = [
-                    .isDirectoryKey,
-                    .fileSizeKey,
-                    .contentModificationDateKey,
-                    .nameKey
-                ]
-                
-                // Check if the URL is accessible
-                let reachable = try url.checkResourceIsReachable()
-                if !reachable {
-                    print("⚠️ [SMB] URL not reachable: \(urlString)")
-                    continue
-                }
-                
-                // Try to list directory contents
-                let directoryContents = try fileManager.contentsOfDirectory(
-                    at: url,
-                    includingPropertiesForKeys: resourceKeys,
-                    options: [.skipsHiddenFiles]
-                )
-                
-                print("✅ [SMB] Native SMB access successful, found \(directoryContents.count) items")
-                
-                for fileURL in directoryContents {
-                    let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
-                    
-                    let name = resourceValues.name ?? fileURL.lastPathComponent
-                    let isDirectory = resourceValues.isDirectory ?? false
-                    let size = resourceValues.fileSize.map { Int64($0) }
-                    let modificationDate = resourceValues.contentModificationDate ?? Date()
-                    
-                    let item = SMBFileItem(
-                        name: name,
-                        path: "\(path)/\(name)".replacingOccurrences(of: "//", with: "/"),
-                        isDirectory: isDirectory,
-                        size: size,
-                        modifiedDate: modificationDate
-                    )
-                    items.append(item)
-                }
-                
-                // If we got results, return them
-                if !items.isEmpty {
-                    print("✅ [SMB] Native SMB returned \(items.count) items")
-                    return items
-                }
-                
-            } catch {
-                print("⚠️ [SMB] Native SMB access failed for \(urlString): \(error)")
-                continue
-            }
-        }
-        
-        // Also try using URL bookmarks for SMB access
-        if let bookmarkItems = try? await tryBookmarkAccess(path: path, server: server) {
-            print("✅ [SMB] Bookmark access returned \(bookmarkItems.count) items")
-            return bookmarkItems
+        // Log what we're trying to avoid
+        if let localRootContents = try? FileManager.default.contentsOfDirectory(atPath: "/") {
+            print("🚫 [SMB] Local root contains: \(localRootContents.prefix(5).joined(separator: ", ")) - avoiding this")
         }
         
         throw SMBError.serverUnreachable
     }
     
     private func tryBookmarkAccess(path: String, server: String) async throws -> [SMBFileItem] {
-        print("📂 [SMB] Trying bookmark-based SMB access for \(path)")
+        print("📂 [SMB] Trying bookmark-based SMB access for \(path) on server \(server)")
         
-        // Try to create a bookmark for SMB access
-        let smbURLString = "smb://\(server)\(path)"
-        guard let smbURL = URL(string: smbURLString) else {
-            throw SMBError.invalidPath
-        }
+        // Bookmark access can also resolve to local paths instead of remote SMB servers
+        print("⚠️ [SMB] Bookmark access may resolve to local paths - skipping to avoid local file system")
+        print("📍 [SMB] Target should be server \(server), not local file system")
         
-        do {
-            // Try to create a security-scoped bookmark
-            let bookmarkData = try smbURL.bookmarkData(
-                options: [.suitableForBookmarkFile],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            
-            // Try to resolve the bookmark
-            var isStale = false
-            let resolvedURL = try URL(
-                resolvingBookmarkData: bookmarkData,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            
-            if isStale {
-                print("⚠️ [SMB] Bookmark is stale")
-                throw SMBError.serverUnreachable
-            }
-            
-            // Try to access the resolved URL
-            let fileManager = FileManager.default
-            let resourceKeys: [URLResourceKey] = [
-                .isDirectoryKey,
-                .fileSizeKey,
-                .contentModificationDateKey,
-                .nameKey
-            ]
-            
-            let contents = try fileManager.contentsOfDirectory(
-                at: resolvedURL,
-                includingPropertiesForKeys: resourceKeys,
-                options: [.skipsHiddenFiles]
-            )
-            
-            var items: [SMBFileItem] = []
-            for fileURL in contents {
-                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
-                
-                let name = resourceValues.name ?? fileURL.lastPathComponent
-                let isDirectory = resourceValues.isDirectory ?? false
-                let size = resourceValues.fileSize.map { Int64($0) }
-                let modificationDate = resourceValues.contentModificationDate ?? Date()
-                
-                let item = SMBFileItem(
-                    name: name,
-                    path: "\(path)/\(name)".replacingOccurrences(of: "//", with: "/"),
-                    isDirectory: isDirectory,
-                    size: size,
-                    modifiedDate: modificationDate
-                )
-                items.append(item)
-            }
-            
-            return items
-            
-        } catch {
-            print("⚠️ [SMB] Bookmark access failed: \(error)")
-            throw SMBError.serverUnreachable
-        }
+        throw SMBError.serverUnreachable
     }
     
     private func scanDirectoryWithFileSystem(path: String, server: String) async throws -> [SMBFileItem] {
