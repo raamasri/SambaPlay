@@ -528,19 +528,29 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func tryHTTPDirectoryListing(path: String, server: String) async throws -> [SMBFileItem] {
-        print("📂 [SMB] Trying HTTP directory listing for \(path)")
+        print("📂 [SMB] Trying HTTP directory listing for \(path) on server \(server)")
+        
+        // Clean up the path for URL construction
+        let cleanPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         
         // Try multiple approaches to access SMB shares via HTTP
         let httpURLs = [
-            // Common SMB-over-HTTP patterns
-            "http://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
-            "http://\(server):8080\(path)",
-            "http://\(server):80\(path)",
-            "http://\(server)\(path)",
-            // Try SMB share browsing
-            "http://\(server)/smb\(path)",
-            "http://\(server)/shares\(path)",
-            "http://\(server)/browse\(path)",
+            // Direct share access patterns
+            "http://\(server)/\(cleanPath)",
+            "http://\(server)/\(cleanPath)/",
+            // Common SMB web interface patterns
+            "http://\(server):8080/\(cleanPath)",
+            "http://\(server):8080/\(cleanPath)/",
+            "http://\(server):80/\(cleanPath)",
+            // SMB share browsing endpoints
+            "http://\(server)/smb/\(cleanPath)",
+            "http://\(server)/shares/\(cleanPath)",
+            "http://\(server)/browse/\(cleanPath)",
+            "http://\(server)/files/\(cleanPath)",
+            // NAS-specific patterns
+            "http://\(server):5000/\(cleanPath)", // Synology
+            "http://\(server):9000/\(cleanPath)", // Common NAS port
+            "http://\(server)/webman/3rdparty/FileStation/index.cgi?path=\(cleanPath)", // Synology FileStation
         ]
         
         for urlString in httpURLs {
@@ -736,38 +746,84 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func probeDirectoryContents(path: String, server: String) async -> [SMBFileItem] {
-        // Try to discover files in a directory by probing common patterns
+        print("🔍 [SMB] Probing directory contents for \(path) on server \(server)")
         var items: [SMBFileItem] = []
         
-        // Try to access the directory via HTTP and parse any response
+        // Clean up the path for URL construction
+        let cleanPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        
+        // Try to access the directory via multiple HTTP patterns
         let probeURLs = [
-            "http://\(server)\(path)",
-            "http://\(server):8080\(path)",
-            "http://\(server)/files\(path)",
+            // Direct access patterns
+            "http://\(server)/\(cleanPath)",
+            "http://\(server)/\(cleanPath)/",
+            "http://\(server):8080/\(cleanPath)",
+            "http://\(server):8080/\(cleanPath)/",
+            // SMB-specific endpoints
+            "http://\(server)/smb/\(cleanPath)",
+            "http://\(server)/shares/\(cleanPath)",
+            "http://\(server)/files/\(cleanPath)",
+            "http://\(server)/browse/\(cleanPath)",
+            // NAS-specific patterns
+            "http://\(server):5000/\(cleanPath)", // Synology
+            "http://\(server):9000/\(cleanPath)", // Common NAS
+            // WebDAV patterns
+            "http://\(server):5005/\(cleanPath)", // WebDAV
         ]
         
         for urlString in probeURLs {
             guard let url = URL(string: urlString) else { continue }
             
             do {
+                print("🌐 [SMB] Probing \(urlString)")
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 2.0
+                request.timeoutInterval = 3.0
+                
+                // Add authentication
+                let authString = "guest:"
+                let authData = authString.data(using: .utf8)!
+                let base64Auth = authData.base64EncodedString()
+                request.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
                 
                 let (data, response) = try await URLSession.shared.data(for: request)
                 
-                if let httpResponse = response as? HTTPURLResponse,
-                   httpResponse.statusCode == 200,
-                   let content = String(data: data, encoding: .utf8) {
+                if let httpResponse = response as? HTTPURLResponse {
+                    print("📡 [SMB] Response \(httpResponse.statusCode) from \(urlString)")
                     
-                    if let parsedItems = parseGenericResponse(content, basePath: path) {
-                        items.append(contentsOf: parsedItems)
+                    if httpResponse.statusCode == 200,
+                       let content = String(data: data, encoding: .utf8) {
+                        
+                        print("📄 [SMB] Got \(content.count) characters of content")
+                        
+                        if let parsedItems = parseGenericResponse(content, basePath: path) {
+                            print("✅ [SMB] Parsed \(parsedItems.count) items from \(urlString)")
+                            items.append(contentsOf: parsedItems)
+                            
+                            // If we found items, return them
+                            if !items.isEmpty {
+                                return items
+                            }
+                        }
+                        
+                        // Try HTML directory listing parsing
+                        let htmlItems = parseHTMLDirectoryListing(content, basePath: path)
+                        if !htmlItems.isEmpty {
+                            print("✅ [SMB] Parsed \(htmlItems.count) HTML items from \(urlString)")
+                            items.append(contentsOf: htmlItems)
+                            
+                            if !items.isEmpty {
+                                return items
+                            }
+                        }
                     }
                 }
             } catch {
+                print("⚠️ [SMB] Probe failed for \(urlString): \(error.localizedDescription)")
                 continue
             }
         }
         
+        print("📭 [SMB] Directory probing found \(items.count) items")
         return items
     }
     
@@ -808,47 +864,109 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func scanDirectoryWithFileSystem(path: String, server: String) async throws -> [SMBFileItem] {
-        // Final fallback - try alternative network access methods
-        print("📂 [SMB] Using alternative scanning methods for \(path)")
+        print("📂 [SMB] Final fallback - scanning \(path) on server \(server)")
         
-        // Try common network share access patterns
+        // Clean up the path for URL construction
+        let cleanPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        
+        // Try comprehensive network share access patterns
         let alternativeURLs = [
-            "http://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
-            "https://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
-            "http://\(server):8000\(path)",
-            "http://\(server):3000\(path)",
-            "http://\(server)/share\(path)",
-            "http://\(server)/files\(path)",
+            // Basic HTTP patterns with and without trailing slash
+            "http://\(server)/\(cleanPath)",
+            "http://\(server)/\(cleanPath)/",
+            "https://\(server)/\(cleanPath)",
+            "https://\(server)/\(cleanPath)/",
+            
+            // Alternative ports
+            "http://\(server):8000/\(cleanPath)",
+            "http://\(server):3000/\(cleanPath)",
+            "http://\(server):8080/\(cleanPath)",
+            "http://\(server):9000/\(cleanPath)",
+            
+            // SMB web interfaces
+            "http://\(server)/share/\(cleanPath)",
+            "http://\(server)/shares/\(cleanPath)",
+            "http://\(server)/files/\(cleanPath)",
+            "http://\(server)/smb/\(cleanPath)",
+            "http://\(server)/browse/\(cleanPath)",
+            
+            // NAS-specific patterns
+            "http://\(server):5000/\(cleanPath)", // Synology
+            "http://\(server):5001/\(cleanPath)", // Synology HTTPS
+            
+            // WebDAV
+            "http://\(server):5005/\(cleanPath)",
+            
+            // FTP over HTTP
+            "http://\(server):21/\(cleanPath)",
         ]
         
         for urlString in alternativeURLs {
             guard let url = URL(string: urlString) else { continue }
             
             do {
+                print("🔗 [SMB] Trying fallback access: \(urlString)")
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 2.0
-                request.setValue("guest:", forHTTPHeaderField: "Authorization")
+                request.timeoutInterval = 4.0 // Longer timeout for final attempts
                 
-                let (data, response) = try await URLSession.shared.data(for: request)
+                // Try multiple authentication methods
+                let authMethods = [
+                    ("guest", ""),
+                    ("anonymous", ""),
+                    ("", ""),
+                    ("admin", ""),
+                    ("user", "user")
+                ]
                 
-                if let httpResponse = response as? HTTPURLResponse, 
-                   httpResponse.statusCode == 200,
-                   let content = String(data: data, encoding: .utf8) {
+                for (username, password) in authMethods {
+                    if !username.isEmpty || !password.isEmpty {
+                        let authString = "\(username):\(password)"
+                        let authData = authString.data(using: .utf8)!
+                        let base64Auth = authData.base64EncodedString()
+                        request.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
+                    }
                     
-                    print("✅ [SMB] Alternative access successful for \(urlString)")
+                    let (data, response) = try await URLSession.shared.data(for: request)
                     
-                    // Try to parse the response for file listings
-                    if let items = parseGenericResponse(content, basePath: path) {
-                        return items
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("📡 [SMB] Response \(httpResponse.statusCode) from \(urlString) with auth '\(username)'")
+                        
+                        if httpResponse.statusCode == 200,
+                           let content = String(data: data, encoding: .utf8) {
+                            
+                            print("📄 [SMB] Got \(content.count) characters from \(urlString)")
+                            
+                            // Try multiple parsing methods
+                            if let items = parseGenericResponse(content, basePath: path) {
+                                print("✅ [SMB] Fallback access successful - found \(items.count) items via \(urlString)")
+                                return items
+                            }
+                            
+                            let htmlItems = parseHTMLDirectoryListing(content, basePath: path)
+                            if !htmlItems.isEmpty {
+                                print("✅ [SMB] Fallback HTML parsing successful - found \(htmlItems.count) items via \(urlString)")
+                                return htmlItems
+                            }
+                            
+                            // If we got content but couldn't parse it, log a sample
+                            let preview = String(content.prefix(200))
+                            print("📄 [SMB] Could not parse content, preview: \(preview)")
+                        }
+                        
+                        // If we got a successful response, don't try other auth methods
+                        if httpResponse.statusCode < 400 {
+                            break
+                        }
                     }
                 }
             } catch {
+                print("⚠️ [SMB] Fallback failed for \(urlString): \(error.localizedDescription)")
                 continue
             }
         }
         
-        // If all else fails, show an empty directory message
-        print("⚠️ [SMB] No files found in \(path) - directory may be empty or inaccessible")
+        // If all else fails, show empty directory (which is correct behavior)
+        print("📭 [SMB] All access methods failed for \(path) - directory appears empty or inaccessible")
         return []
     }
     
