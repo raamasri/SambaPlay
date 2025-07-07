@@ -328,40 +328,226 @@ class SMBConnectionManager: ObservableObject {
     }
     
     private func getRealDirectoryListing(path: String, server: String) async throws -> [SMBFileItem] {
-        // For now, skip the HTTP attempts that are causing timeouts
-        // and go directly to fallback for faster connection
-        print("📂 [SMB] Skipping HTTP attempts, using fallback shares for faster connection")
+        print("📂 [SMB] Attempting real directory listing for path: \(path)")
         
-        // TODO: Re-enable HTTP directory listing with shorter timeouts
-        // if let httpItems = try? await tryHTTPDirectoryListing(path: path, server: server) {
-        //     return httpItems
-        // }
+        // For now, focus on HTTP-based approaches that are most likely to work
+        // Skip the exotic protocols that are failing and go straight to practical solutions
         
+        // Try HTTP directory listing with multiple approaches
+        if let httpItems = try? await tryHTTPDirectoryListing(path: path, server: server) {
+            print("✅ [SMB] Got \(httpItems.count) items via HTTP")
+            return httpItems
+        }
+        
+        // Try alternative network scanning approaches
+        if let altItems = try? await tryAlternativeNetworkAccess(path: path, server: server) {
+            print("✅ [SMB] Got \(altItems.count) items via alternative access")
+            return altItems
+        }
+        
+        // Try NetBIOS-style enumeration
+        if let netbiosItems = try? await tryNetBIOSEnumeration(path: path, server: server) {
+            print("✅ [SMB] Got \(netbiosItems.count) items via NetBIOS enumeration")
+            return netbiosItems
+        }
+        
+        // Try iOS native SMB file enumeration (iOS 13+)
+        if let nativeItems = try? await tryNativeSMBAccess(path: path, server: server) {
+            print("✅ [SMB] Got \(nativeItems.count) items via native SMB access")
+            return nativeItems
+        }
+        
+        print("⚠️ [SMB] All real directory listing methods failed, using known shares")
         return []
     }
     
+    private func tryDirectSMBAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying direct SMB URL access for \(path)")
+        
+        // Try direct SMB URLs that some systems support
+        let smbURLs = [
+            "smb://\(server)\(path)",
+            "smb://guest@\(server)\(path)",
+            "smb://anonymous@\(server)\(path)"
+        ]
+        
+        for urlString in smbURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                // Try to access SMB URL directly (limited support in iOS)
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 3.0
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    print("✅ [SMB] Direct SMB access successful for \(urlString)")
+                    // Parse response as directory listing
+                    if let items = parseSMBResponse(data, basePath: path) {
+                        return items
+                    }
+                }
+            } catch {
+                print("⚠️ [SMB] Direct SMB access failed for \(urlString): \(error)")
+                continue
+            }
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
+    private func tryWebDAVAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying WebDAV access for \(path)")
+        
+        // Many NAS devices support WebDAV on various ports
+        let webdavURLs = [
+            "http://\(server):5005\(path)",  // Common WebDAV port
+            "http://\(server):8080\(path)",  // Alternative WebDAV port
+            "http://\(server)/webdav\(path)", // Common WebDAV path
+            "http://\(server)/dav\(path)",   // Alternative WebDAV path
+            "https://\(server):5006\(path)", // Secure WebDAV
+        ]
+        
+        for urlString in webdavURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.httpMethod = "PROPFIND"  // WebDAV directory listing method
+                request.timeoutInterval = 3.0
+                request.setValue("1", forHTTPHeaderField: "Depth")
+                request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
+                
+                // Add basic auth
+                let loginString = "guest:"
+                let loginData = loginString.data(using: .utf8)!
+                let base64LoginString = loginData.base64EncodedString()
+                request.setValue("Basic \(base64LoginString)", forHTTPHeaderField: "Authorization")
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, 
+                   httpResponse.statusCode == 207 || httpResponse.statusCode == 200 {  // 207 = Multi-Status
+                    print("✅ [SMB] WebDAV access successful for \(urlString)")
+                    if let items = parseWebDAVResponse(data, basePath: path) {
+                        return items
+                    }
+                }
+            } catch {
+                print("⚠️ [SMB] WebDAV access failed for \(urlString): \(error)")
+                continue
+            }
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
+    private func tryFTPAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying FTP access for \(path)")
+        
+        // Some servers expose SMB shares via FTP
+        let ftpURLs = [
+            "ftp://\(server)\(path)",
+            "ftp://anonymous@\(server)\(path)",
+            "ftp://guest@\(server)\(path)"
+        ]
+        
+        for urlString in ftpURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 3.0
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    print("✅ [SMB] FTP access successful for \(urlString)")
+                    if let items = parseFTPResponse(data, basePath: path) {
+                        return items
+                    }
+                }
+            } catch {
+                print("⚠️ [SMB] FTP access failed for \(urlString): \(error)")
+                continue
+            }
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
+    private func tryAlternativeNetworkAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying alternative network access for \(path)")
+        
+        // Try accessing SMB shares through common HTTP endpoints
+        let alternativeURLs = [
+            "http://\(server)/shares", 
+            "http://\(server)/smb",
+            "http://\(server)/samba",
+            "http://\(server)/browse",
+            "http://\(server)/files",
+            "http://\(server):8080/files",
+            "http://\(server):3000/browse", 
+            "http://\(server)/cgi-bin/luci",  // OpenWrt interface
+            "http://\(server)/admin",          // Common admin interface
+        ]
+        
+        for urlString in alternativeURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 2.0
+                
+                // Try basic auth with common credentials
+                let authString = "guest:"
+                let authData = authString.data(using: .utf8)!
+                let base64Auth = authData.base64EncodedString()
+                request.setValue("Basic \(base64Auth)", forHTTPHeaderField: "Authorization")
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, 
+                   httpResponse.statusCode == 200,
+                   let content = String(data: data, encoding: .utf8),
+                   content.count > 100 { // Ensure we got a meaningful response
+                    
+                    print("✅ [SMB] Alternative access found content at \(urlString)")
+                    
+                    if let items = parseGenericResponse(content, basePath: path) {
+                        return items
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
     private func tryHTTPDirectoryListing(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying HTTP directory listing for \(path)")
+        
         // Try multiple approaches to access SMB shares via HTTP
         let httpURLs = [
-            // Standard SMB web interface ports
-            "http://\(server):445\(path)",
-            "http://\(server):139\(path)", 
+            // Common SMB-over-HTTP patterns
+            "http://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
+            "http://\(server):8080\(path)",
             "http://\(server):80\(path)",
             "http://\(server)\(path)",
-            // Common NAS web interface paths
-            "http://\(server)/webman/3rdparty/FileStation/index.cgi",
-            "http://\(server):5000/webman/3rdparty/FileStation/index.cgi", // Synology
-            "http://\(server):8080\(path)", // Common web port
-            "http://\(server):9000\(path)", // Alternative port
-            // Try with SMB share paths
-            "http://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
+            // Try SMB share browsing
+            "http://\(server)/smb\(path)",
+            "http://\(server)/shares\(path)",
+            "http://\(server)/browse\(path)",
         ]
         
         for urlString in httpURLs {
             if let url = URL(string: urlString) {
                 do {
                     var request = URLRequest(url: url)
-                    request.timeoutInterval = 15.0
+                    request.timeoutInterval = 2.0  // Even faster timeout
                     
                     // Try different authentication methods
                     let authMethods = [
@@ -430,6 +616,118 @@ class SMBConnectionManager: ObservableObject {
         throw SMBError.serverUnreachable
     }
     
+    private func tryNetBIOSEnumeration(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying NetBIOS-style enumeration for \(path)")
+        
+        // Try to enumerate SMB shares using network requests to common SMB paths
+        // This mimics what smbclient or other SMB tools would do
+        
+        var discoveredItems: [SMBFileItem] = []
+        
+        // If we're at root, try to enumerate shares
+        if path == "/" || path.isEmpty {
+            // Try common share names that often exist on SMB servers
+            let commonShares = [
+                "UPLOAD", "BACKUPP", "BACKUPA", "BACKUP2", "BACKUP1", // Your known shares
+                "Public", "Downloads", "Documents", "Music", "Videos", "Pictures", // Common defaults
+                "shared", "data", "files", "media", "storage", "home", "users" // Generic names
+            ]
+            
+            // Test each potential share by trying to access it
+            for shareName in commonShares {
+                if await testShareExists(shareName: shareName, server: server) {
+                    let shareItem = SMBFileItem(
+                        name: shareName,
+                        path: "/\(shareName)",
+                        isDirectory: true,
+                        size: nil,
+                        modifiedDate: Date()
+                    )
+                    discoveredItems.append(shareItem)
+                    print("✅ [SMB] Discovered share: \(shareName)")
+                }
+            }
+        } else {
+            // For subdirectories, try to probe for common file patterns
+            discoveredItems = await probeDirectoryContents(path: path, server: server)
+        }
+        
+        if !discoveredItems.isEmpty {
+            return discoveredItems
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
+    private func testShareExists(shareName: String, server: String) async -> Bool {
+        // Test if a share exists by trying to access it via different methods
+        let testURLs = [
+            "http://\(server)/\(shareName)",
+            "http://\(server):8080/\(shareName)",
+            "http://\(server)/smb/\(shareName)",
+            "http://\(server)/shares/\(shareName)",
+        ]
+        
+        for urlString in testURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 1.0 // Very fast test
+                request.httpMethod = "HEAD" // Just test if accessible
+                
+                let (_, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse {
+                    // Consider it exists if we get any response except 404
+                    if httpResponse.statusCode != 404 && httpResponse.statusCode < 500 {
+                        return true
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+        
+        return false
+    }
+    
+    private func probeDirectoryContents(path: String, server: String) async -> [SMBFileItem] {
+        // Try to discover files in a directory by probing common patterns
+        var items: [SMBFileItem] = []
+        
+        // Try to access the directory via HTTP and parse any response
+        let probeURLs = [
+            "http://\(server)\(path)",
+            "http://\(server):8080\(path)",
+            "http://\(server)/files\(path)",
+        ]
+        
+        for urlString in probeURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 2.0
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode == 200,
+                   let content = String(data: data, encoding: .utf8) {
+                    
+                    if let parsedItems = parseGenericResponse(content, basePath: path) {
+                        items.append(contentsOf: parsedItems)
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+        
+        return items
+    }
+    
     private func tryNetBIOSListing(path: String, server: String) async throws -> [SMBFileItem] {
         // iOS doesn't support Process class - fallback to network approach
         throw SMBError.serverUnreachable
@@ -440,51 +738,270 @@ class SMBConnectionManager: ObservableObject {
         throw SMBError.serverUnreachable
     }
     
-    private func scanDirectoryWithFileSystem(path: String, server: String) async throws -> [SMBFileItem] {
-        // Final fallback - create realistic directory structure for testing
-        print("📂 [SMB] Using fallback directory scan for \(path)")
+    private func tryNativeSMBAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying native iOS SMB access for \(path)")
         
-        let shareNames = ["UPLOAD", "BACKUPP", "BACKUPA", "BACKUP2", "BACKUP1"]
+        // iOS 13+ supports native SMB access via FileManager with proper SMB URLs
+        guard #available(iOS 13.0, *) else {
+            print("⚠️ [SMB] Native SMB access requires iOS 13+")
+            throw SMBError.serverUnreachable
+        }
         
-        if shareNames.contains(where: { path.contains($0) }) {
-            // Generate realistic file structure
-            var items: [SMBFileItem] = []
+        let fileManager = FileManager.default
+        var items: [SMBFileItem] = []
+        
+        // Try different SMB URL formats that iOS might support
+        let smbURLStrings = [
+            "smb://\(server)\(path)",
+            "smb://guest@\(server)\(path)",
+            "smb://\(server):445\(path)",
+            "cifs://\(server)\(path)",
+            "cifs://guest@\(server)\(path)"
+        ]
+        
+        for urlString in smbURLStrings {
+            guard let url = URL(string: urlString) else { continue }
             
-            // Add some common directory names
-            let commonDirs = ["Music", "Audio", "Documents", "Media", "Files"]
-            for dir in commonDirs {
-                items.append(SMBFileItem(
-                    name: dir,
-                    path: "\(path)/\(dir)".replacingOccurrences(of: "//", with: "/"),
-                    isDirectory: true,
-                    size: nil,
-                    modifiedDate: Date().addingTimeInterval(-Double.random(in: 0...86400*30))
-                ))
+            do {
+                print("📡 [SMB] Attempting native access to: \(urlString)")
+                
+                // Try to access the SMB URL directly
+                let resourceKeys: [URLResourceKey] = [
+                    .isDirectoryKey,
+                    .fileSizeKey,
+                    .contentModificationDateKey,
+                    .nameKey
+                ]
+                
+                // Check if the URL is accessible
+                let reachable = try url.checkResourceIsReachable()
+                if !reachable {
+                    print("⚠️ [SMB] URL not reachable: \(urlString)")
+                    continue
+                }
+                
+                // Try to list directory contents
+                let directoryContents = try fileManager.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: resourceKeys,
+                    options: [.skipsHiddenFiles]
+                )
+                
+                print("✅ [SMB] Native SMB access successful, found \(directoryContents.count) items")
+                
+                for fileURL in directoryContents {
+                    let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+                    
+                    let name = resourceValues.name ?? fileURL.lastPathComponent
+                    let isDirectory = resourceValues.isDirectory ?? false
+                    let size = resourceValues.fileSize.map { Int64($0) }
+                    let modificationDate = resourceValues.contentModificationDate ?? Date()
+                    
+                    let item = SMBFileItem(
+                        name: name,
+                        path: "\(path)/\(name)".replacingOccurrences(of: "//", with: "/"),
+                        isDirectory: isDirectory,
+                        size: size,
+                        modifiedDate: modificationDate
+                    )
+                    items.append(item)
+                }
+                
+                // If we got results, return them
+                if !items.isEmpty {
+                    print("✅ [SMB] Native SMB returned \(items.count) items")
+                    return items
+                }
+                
+            } catch {
+                print("⚠️ [SMB] Native SMB access failed for \(urlString): \(error)")
+                continue
+            }
+        }
+        
+        // Also try using URL bookmarks for SMB access
+        if let bookmarkItems = try? await tryBookmarkAccess(path: path, server: server) {
+            print("✅ [SMB] Bookmark access returned \(bookmarkItems.count) items")
+            return bookmarkItems
+        }
+        
+        throw SMBError.serverUnreachable
+    }
+    
+    private func tryBookmarkAccess(path: String, server: String) async throws -> [SMBFileItem] {
+        print("📂 [SMB] Trying bookmark-based SMB access for \(path)")
+        
+        // Try to create a bookmark for SMB access
+        let smbURLString = "smb://\(server)\(path)"
+        guard let smbURL = URL(string: smbURLString) else {
+            throw SMBError.invalidPath
+        }
+        
+        do {
+            // Try to create a security-scoped bookmark
+            let bookmarkData = try smbURL.bookmarkData(
+                options: [.suitableForBookmarkFile],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            
+            // Try to resolve the bookmark
+            var isStale = false
+            let resolvedURL = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            
+            if isStale {
+                print("⚠️ [SMB] Bookmark is stale")
+                throw SMBError.serverUnreachable
             }
             
-            // Add some sample audio files
-            let audioFiles = [
-                ("Track001.mp3", 4567890),
-                ("Song.wav", 12345678),
-                ("Audio.m4a", 3456789),
-                ("Music.flac", 8765432),
-                ("Recording.aac", 2345678)
+            // Try to access the resolved URL
+            let fileManager = FileManager.default
+            let resourceKeys: [URLResourceKey] = [
+                .isDirectoryKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+                .nameKey
             ]
             
-            for (name, size) in audioFiles {
-                items.append(SMBFileItem(
+            let contents = try fileManager.contentsOfDirectory(
+                at: resolvedURL,
+                includingPropertiesForKeys: resourceKeys,
+                options: [.skipsHiddenFiles]
+            )
+            
+            var items: [SMBFileItem] = []
+            for fileURL in contents {
+                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+                
+                let name = resourceValues.name ?? fileURL.lastPathComponent
+                let isDirectory = resourceValues.isDirectory ?? false
+                let size = resourceValues.fileSize.map { Int64($0) }
+                let modificationDate = resourceValues.contentModificationDate ?? Date()
+                
+                let item = SMBFileItem(
                     name: name,
                     path: "\(path)/\(name)".replacingOccurrences(of: "//", with: "/"),
-                    isDirectory: false,
-                    size: Int64(size),
-                    modifiedDate: Date().addingTimeInterval(-Double.random(in: 0...86400*7))
-                ))
+                    isDirectory: isDirectory,
+                    size: size,
+                    modifiedDate: modificationDate
+                )
+                items.append(item)
             }
             
             return items
+            
+        } catch {
+            print("⚠️ [SMB] Bookmark access failed: \(error)")
+            throw SMBError.serverUnreachable
+        }
+    }
+    
+    private func scanDirectoryWithFileSystem(path: String, server: String) async throws -> [SMBFileItem] {
+        // Final fallback - try alternative network access methods
+        print("📂 [SMB] Using alternative scanning methods for \(path)")
+        
+        // Try common network share access patterns
+        let alternativeURLs = [
+            "http://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
+            "https://\(server)/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))",
+            "http://\(server):8000\(path)",
+            "http://\(server):3000\(path)",
+            "http://\(server)/share\(path)",
+            "http://\(server)/files\(path)",
+        ]
+        
+        for urlString in alternativeURLs {
+            guard let url = URL(string: urlString) else { continue }
+            
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 2.0
+                request.setValue("guest:", forHTTPHeaderField: "Authorization")
+                
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, 
+                   httpResponse.statusCode == 200,
+                   let content = String(data: data, encoding: .utf8) {
+                    
+                    print("✅ [SMB] Alternative access successful for \(urlString)")
+                    
+                    // Try to parse the response for file listings
+                    if let items = parseGenericResponse(content, basePath: path) {
+                        return items
+                    }
+                }
+            } catch {
+                continue
+            }
         }
         
+        // If all else fails, show an empty directory message
+        print("⚠️ [SMB] No files found in \(path) - directory may be empty or inaccessible")
         return []
+    }
+    
+    private func parseGenericResponse(_ content: String, basePath: String) -> [SMBFileItem]? {
+        var items: [SMBFileItem] = []
+        
+        // Try to extract file/directory names from various response formats
+        let patterns = [
+            #"href="([^"]+)">([^<]+)<"#,          // HTML links
+            #"<a[^>]*>([^<]+)</a>"#,              // Anchor tags
+            #""([^"]+\.[a-zA-Z0-9]{2,4})""#,      // Quoted filenames with extensions
+            #"\b([a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]{2,4})\b"#, // Standalone filenames
+        ]
+        
+        for pattern in patterns {
+            let regex = try? NSRegularExpression(pattern: pattern, options: [])
+            let range = NSRange(location: 0, length: content.utf16.count)
+            
+            regex?.enumerateMatches(in: content, options: [], range: range) { match, _, _ in
+                guard let match = match else { return }
+                
+                var fileName: String?
+                
+                // Try to get filename from capture groups
+                if match.numberOfRanges > 2,
+                   let fileRange = Range(match.range(at: 2), in: content) {
+                    fileName = String(content[fileRange])
+                } else if match.numberOfRanges > 1,
+                         let fileRange = Range(match.range(at: 1), in: content) {
+                    fileName = String(content[fileRange])
+                }
+                
+                if let fileName = fileName,
+                   !fileName.isEmpty,
+                   !fileName.contains("<"),
+                   !fileName.contains(".."),
+                   ![".", "..", "index.html", "favicon.ico"].contains(fileName.lowercased()) {
+                    
+                    let isDirectory = !fileName.contains(".")
+                    let cleanName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    let item = SMBFileItem(
+                        name: cleanName,
+                        path: "\(basePath)/\(cleanName)".replacingOccurrences(of: "//", with: "/"),
+                        isDirectory: isDirectory,
+                        size: nil,
+                        modifiedDate: Date()
+                    )
+                    items.append(item)
+                }
+            }
+        }
+        
+        // Remove duplicates
+        let uniqueItems = Array(Set(items.map { $0.name })).compactMap { name in
+            items.first { $0.name == name }
+        }
+        
+        return uniqueItems.isEmpty ? nil : uniqueItems
     }
     
     func downloadFile(at path: String, to localURL: URL, progress: @escaping (Double) -> Void) async throws {
@@ -635,6 +1152,192 @@ class SMBConnectionManager: ObservableObject {
         }
         
         return nil
+    }
+    
+    private func parseSMBResponse(_ data: Data, basePath: String) -> [SMBFileItem]? {
+        guard let content = String(data: data, encoding: .utf8) else { return nil }
+        
+        print("📄 [SMB] Parsing SMB response (\(data.count) bytes)")
+        
+        // Try to parse as directory listing (different formats possible)
+        var items: [SMBFileItem] = []
+        let lines = content.components(separatedBy: .newlines)
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !trimmed.hasPrefix(".") {
+                // Simple parsing - assume each line is a file/directory name
+                let item = SMBFileItem(
+                    name: trimmed,
+                    path: "\(basePath)/\(trimmed)".replacingOccurrences(of: "//", with: "/"),
+                    isDirectory: !trimmed.contains("."), // Simple heuristic
+                    size: nil,
+                    modifiedDate: Date()
+                )
+                items.append(item)
+            }
+        }
+        
+        return items.isEmpty ? nil : items
+    }
+    
+    private func parseWebDAVResponse(_ data: Data, basePath: String) -> [SMBFileItem]? {
+        guard let content = String(data: data, encoding: .utf8) else { return nil }
+        
+        print("📄 [SMB] Parsing WebDAV response (\(data.count) bytes)")
+        
+        var items: [SMBFileItem] = []
+        
+        // Parse WebDAV XML response
+        let patterns = [
+            #"<D:href>([^<]+)</D:href>"#,
+            #"<href>([^<]+)</href>"#,
+            #"<d:href>([^<]+)</d:href>"#
+        ]
+        
+        for pattern in patterns {
+            let regex = try? NSRegularExpression(pattern: pattern, options: [])
+            let range = NSRange(location: 0, length: content.utf16.count)
+            
+            regex?.enumerateMatches(in: content, options: [], range: range) { match, _, _ in
+                guard let match = match,
+                      let hrefRange = Range(match.range(at: 1), in: content) else { return }
+                
+                let href = String(content[hrefRange])
+                let decodedHref = href.removingPercentEncoding ?? href
+                
+                // Extract file name from href
+                let pathComponents = decodedHref.components(separatedBy: "/")
+                if let fileName = pathComponents.last, !fileName.isEmpty && fileName != basePath.components(separatedBy: "/").last {
+                    let isDirectory = decodedHref.hasSuffix("/")
+                    let cleanName = fileName.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    
+                    if !cleanName.isEmpty && ![".", ".."].contains(cleanName) {
+                        let item = SMBFileItem(
+                            name: cleanName,
+                            path: "\(basePath)/\(cleanName)".replacingOccurrences(of: "//", with: "/"),
+                            isDirectory: isDirectory,
+                            size: extractFileSizeFromWebDAV(content, fileName: fileName),
+                            modifiedDate: extractModifiedDateFromWebDAV(content, fileName: fileName) ?? Date()
+                        )
+                        items.append(item)
+                    }
+                }
+            }
+        }
+        
+        return items.isEmpty ? nil : items
+    }
+    
+    private func parseFTPResponse(_ data: Data, basePath: String) -> [SMBFileItem]? {
+        guard let content = String(data: data, encoding: .utf8) else { return nil }
+        
+        print("📄 [SMB] Parsing FTP response (\(data.count) bytes)")
+        
+        var items: [SMBFileItem] = []
+        let lines = content.components(separatedBy: .newlines)
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Parse FTP directory listing format
+            // Example: "drwxr-xr-x 3 user group 4096 Jan 1 12:00 dirname"
+            // Example: "-rw-r--r-- 1 user group 1234567 Jan 1 12:00 filename.txt"
+            
+            if trimmed.count > 10 && (trimmed.hasPrefix("d") || trimmed.hasPrefix("-")) {
+                let components = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                
+                if components.count >= 9 {
+                    let isDirectory = trimmed.hasPrefix("d")
+                    let fileName = components[8...].joined(separator: " ") // Handle filenames with spaces
+                    let sizeString = components[4]
+                    let size = Int64(sizeString)
+                    
+                    if !fileName.isEmpty && ![".", ".."].contains(fileName) {
+                        let item = SMBFileItem(
+                            name: fileName,
+                            path: "\(basePath)/\(fileName)".replacingOccurrences(of: "//", with: "/"),
+                            isDirectory: isDirectory,
+                            size: size,
+                            modifiedDate: parseFTPDate(from: Array(components[5...7])) ?? Date()
+                        )
+                        items.append(item)
+                    }
+                }
+            }
+        }
+        
+        return items.isEmpty ? nil : items
+    }
+    
+    private func extractFileSizeFromWebDAV(_ content: String, fileName: String) -> Int64? {
+        // Look for content-length or getcontentlength in WebDAV response
+        let patterns = [
+            #"<D:getcontentlength>(\d+)</D:getcontentlength>"#,
+            #"<getcontentlength>(\d+)</getcontentlength>"#,
+            #"<d:getcontentlength>(\d+)</d:getcontentlength>"#
+        ]
+        
+        for pattern in patterns {
+            let regex = try? NSRegularExpression(pattern: pattern)
+            let range = NSRange(location: 0, length: content.utf16.count)
+            
+            if let match = regex?.firstMatch(in: content, options: [], range: range),
+               let sizeRange = Range(match.range(at: 1), in: content) {
+                let sizeString = String(content[sizeRange])
+                return Int64(sizeString)
+            }
+        }
+        
+        return nil
+    }
+    
+    private func extractModifiedDateFromWebDAV(_ content: String, fileName: String) -> Date? {
+        // Look for modification date in WebDAV response
+        let patterns = [
+            #"<D:getlastmodified>([^<]+)</D:getlastmodified>"#,
+            #"<getlastmodified>([^<]+)</getlastmodified>"#,
+            #"<d:getlastmodified>([^<]+)</d:getlastmodified>"#
+        ]
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        
+        for pattern in patterns {
+            let regex = try? NSRegularExpression(pattern: pattern)
+            let range = NSRange(location: 0, length: content.utf16.count)
+            
+            if let match = regex?.firstMatch(in: content, options: [], range: range),
+               let dateRange = Range(match.range(at: 1), in: content) {
+                let dateString = String(content[dateRange])
+                return dateFormatter.date(from: dateString)
+            }
+        }
+        
+        return nil
+    }
+    
+    private func parseFTPDate(from components: [String]) -> Date? {
+        // Parse FTP date format: ["Jan", "1", "12:00"] or ["Jan", "1", "2023"]
+        guard components.count >= 3 else { return nil }
+        
+        let monthString = components[0]
+        let dayString = components[1]
+        let timeOrYear = components[2]
+        
+        let dateFormatter = DateFormatter()
+        
+        if timeOrYear.contains(":") {
+            // Format: "Jan 1 12:00" (current year)
+            dateFormatter.dateFormat = "MMM d HH:mm"
+            let dateString = "\(monthString) \(dayString) \(timeOrYear)"
+            return dateFormatter.date(from: dateString)
+        } else {
+            // Format: "Jan 1 2023"
+            dateFormatter.dateFormat = "MMM d yyyy"
+            let dateString = "\(monthString) \(dayString) \(timeOrYear)"
+            return dateFormatter.date(from: dateString)
+        }
     }
     
     private func parseHTMLDirectoryListing(_ html: String, basePath: String) -> [SMBFileItem] {
