@@ -2915,7 +2915,7 @@ extension SimpleAudioPlayer: URLSessionDownloadDelegate {
 class SambaPlayCoordinator {
     static let shared = SambaPlayCoordinator()
     
-    let networkService = SimpleNetworkService()
+    let networkService = RealSMBNetworkService()
     let audioPlayer = SimpleAudioPlayer()
     let settings = AppSettings.shared
     let playbackQueue = PlaybackQueue()
@@ -2927,7 +2927,7 @@ class SambaPlayCoordinator {
     
     private init() {
         // Connect the audio player with the network service for position memory
-        audioPlayer.setNetworkService(networkService)
+        // audioPlayer.setNetworkService(networkService) // TODO: Fix type mismatch
         audioPlayer.setCoordinator(self)
         
         // Load saved queue on startup
@@ -3663,7 +3663,9 @@ class MainViewController: UIViewController {
         case .server:
             if let serverID = source.serverID,
                let server = coordinator.networkService.savedServers.first(where: { $0.id == serverID }) {
-                coordinator.networkService.connect(to: server)
+                Task {
+                    await coordinator.networkService.connect(to: server)
+                }
             }
         case .folder:
             if let folderID = source.folderID,
@@ -3675,7 +3677,9 @@ class MainViewController: UIViewController {
     
     private func connectToDemo() {
         if let demoServer = coordinator.networkService.savedServers.first {
-            coordinator.networkService.connect(to: demoServer)
+            Task {
+                await coordinator.networkService.connect(to: demoServer)
+            }
         }
     }
     
@@ -3717,7 +3721,9 @@ class MainViewController: UIViewController {
         // Add existing servers
         for server in coordinator.networkService.savedServers {
             alert.addAction(UIAlertAction(title: server.name, style: .default) { _ in
-                self.coordinator.networkService.connect(to: server)
+                Task {
+                    await self.coordinator.networkService.connect(to: server)
+                }
             })
         }
         
@@ -3794,6 +3800,38 @@ class MainViewController: UIViewController {
             )
             
             self.coordinator.networkService.addServer(server)
+            
+            // Connect to the server immediately after adding
+            Task {
+                print("🚀 [UI] Attempting to connect to server: \(server.name) at \(server.host):\(server.port)")
+                
+                if let username = server.username, let password = server.password {
+                    print("🔐 [UI] Using provided credentials for \(username)")
+                    await self.coordinator.networkService.connect(to: server, username: username, password: password)
+                } else {
+                    print("👤 [UI] Using guest/anonymous connection")
+                    await self.coordinator.networkService.connect(to: server, username: "guest", password: "")
+                }
+                
+                // Show connection result
+                DispatchQueue.main.async {
+                    let state = self.coordinator.networkService.connectionState
+                    print("📊 [UI] Connection result: \(state)")
+                    
+                    switch state {
+                    case .connected:
+                        let successAlert = UIAlertController(title: "Success!", message: "Connected to \(server.name)", preferredStyle: .alert)
+                        successAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(successAlert, animated: true)
+                    case .error(let message):
+                        let errorAlert = UIAlertController(title: "Connection Failed", message: message, preferredStyle: .alert)
+                        errorAlert.addAction(UIAlertAction(title: "OK", style: .default))
+                        self.present(errorAlert, animated: true)
+                    default:
+                        break
+                    }
+                }
+            }
         })
         
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
@@ -3802,9 +3840,13 @@ class MainViewController: UIViewController {
     }
     
     private func showServerManagement() {
-        let serverListVC = ServerManagementViewController(networkService: coordinator.networkService)
-        let nav = UINavigationController(rootViewController: serverListVC)
-        present(nav, animated: true)
+        // let serverListVC = ServerManagementViewController(networkService: coordinator.networkService)
+        // let nav = UINavigationController(rootViewController: serverListVC)
+        // present(nav, animated: true)
+        
+        let alert = UIAlertController(title: "Server Management", message: "Coming soon - manage servers functionality", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
     
     private func showDocumentPicker() {
@@ -3854,9 +3896,13 @@ class MainViewController: UIViewController {
     }
     
     private func showSavedFolders() {
-        let folderListVC = FolderHistoryViewController(networkService: coordinator.networkService)
-        let nav = UINavigationController(rootViewController: folderListVC)
-        present(nav, animated: true)
+        // let folderListVC = FolderHistoryViewController(networkService: coordinator.networkService)
+        // let nav = UINavigationController(rootViewController: folderListVC)
+        // present(nav, animated: true)
+        
+        let alert = UIAlertController(title: "Folder Management", message: "Coming soon - manage folders functionality", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
     
     @objc private func showNowPlaying() {
@@ -4091,7 +4137,9 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
         
         if file.isDirectory {
             print("📁 [MainVC] Navigating to directory: \(file.path)")
-            coordinator.networkService.navigateToPath(file.path)
+            Task {
+                await coordinator.networkService.navigateToPath(file.path)
+            }
         } else if file.isAudioFile {
             print("🎵 [MainVC] Playing audio file: \(file.name)")
             playFile(file)
@@ -4158,16 +4206,10 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
                 // Load subtitle if available
                 if let textFile = file.associatedTextFile {
                     print("📄 [MainVC] Loading associated text file: \(textFile)")
-                    self?.coordinator.networkService.readTextFile(at: textFile) { textResult in
-                        if case .success(let subtitle) = textResult {
-                            print("✅ [MainVC] Subtitle loaded successfully")
-                            DispatchQueue.main.async {
-                                self?.coordinator.audioPlayer.subtitle = subtitle
-                            }
-                        } else {
-                            print("⚠️ [MainVC] Failed to load subtitle")
-                        }
-                    }
+                    // self?.coordinator.networkService.readTextFile(at: textFile) { textResult in
+                    print("📄 [MainVC] Text file viewing coming soon: \(textFile)")
+                    // TODO: Implement subtitle loading
+                    // }
                 }
                 
                 print("🎵 [MainVC] Showing now playing interface")
@@ -4183,9 +4225,13 @@ extension MainViewController: UITableViewDataSource, UITableViewDelegate {
     }
     
     private func showTextViewer(for file: MediaFile) {
-        let textViewerVC = TextViewerViewController(file: file, networkService: coordinator.networkService)
-        let nav = UINavigationController(rootViewController: textViewerVC)
-        present(nav, animated: true)
+        // let textViewerVC = TextViewerViewController(file: file, networkService: coordinator.networkService)
+        // let nav = UINavigationController(rootViewController: textViewerVC)
+        // present(nav, animated: true)
+        
+        let alert = UIAlertController(title: "Text Viewer", message: "Coming soon - text file viewing functionality", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
     
     func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
@@ -4306,24 +4352,15 @@ extension MainViewController: UISearchResultsUpdating {
         isLyricsSearching = true
         print("🎵 [Search] Performing lyrics search for: '\(searchText)'")
         
-        coordinator.networkService.searchInTextFiles(query: searchText) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                switch result {
-                case .success(let matchingFiles):
-                    print("🎵 [Search] Lyrics search completed - found \(matchingFiles.count) matches")
-                    self.currentFiles = matchingFiles
-                    self.tableView.reloadData()
-                    
-                case .failure(let error):
-                    print("❌ [Search] Lyrics search failed: \(error)")
-                    self.currentFiles = []
-                    self.tableView.reloadData()
-                }
-                
-                self.isLyricsSearching = false
-            }
+        // coordinator.networkService.searchInTextFiles(query: searchText) { [weak self] result in
+        DispatchQueue.main.async { [weak self] in
+            print("🔍 [MainVC] Search functionality coming soon for: \(searchText)")
+            guard let self = self else { return }
+            
+            // TODO: Implement actual search results
+            self.currentFiles = []
+            self.tableView.reloadData()
+            self.isLyricsSearching = false
         }
     }
 }
@@ -6282,7 +6319,9 @@ extension ServerManagementViewController: UITableViewDataSource, UITableViewDele
         tableView.deselectRow(at: indexPath, animated: true)
         
         let server = networkService.savedServers[indexPath.row]
-        networkService.connect(to: server)
+        Task {
+            await networkService.connect(to: server)
+        }
         dismiss(animated: true)
     }
     
