@@ -3047,15 +3047,75 @@ class MainViewController: UIViewController {
         return stackView
     }()
     
-    private lazy var nowPlayingButton: UIButton = {
+    // MARK: - Enhanced Now Playing Section
+    
+    private lazy var nowPlayingContainer: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .secondarySystemBackground
+        view.layer.cornerRadius = 12
+        view.layer.borderWidth = 1
+        view.layer.borderColor = UIColor.separator.cgColor
+        view.isHidden = true // Initially hidden
+        return view
+    }()
+    
+    private lazy var nowPlayingContentView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }()
+    
+    private lazy var trackTitleLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 16, weight: .medium)
+        label.textColor = .label
+        label.text = "No Track"
+        label.numberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }()
+    
+    private lazy var nowPlayingPlayPauseButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("Now Playing", for: .normal)
-        button.backgroundColor = .systemBlue
-        button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 8
-        button.addTarget(self, action: #selector(showNowPlaying), for: .touchUpInside)
+        button.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(nowPlayingPlayPauseTapped), for: .touchUpInside)
+        button.accessibilityLabel = "Play"
+        button.accessibilityTraits = .button
+        button.tintColor = .systemBlue
         return button
+    }()
+    
+    private lazy var nowPlayingChevronButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: "chevron.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)), for: .normal)
+        button.addTarget(self, action: #selector(showNowPlaying), for: .touchUpInside)
+        button.accessibilityLabel = "Show full now playing"
+        button.accessibilityTraits = .button
+        button.tintColor = .systemGray
+        return button
+    }()
+    
+    private lazy var nowPlayingProgressView: UIProgressView = {
+        let progressView = UIProgressView(progressViewStyle: .default)
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.progressTintColor = .systemBlue
+        progressView.trackTintColor = .systemGray4
+        progressView.progress = 0.0
+        return progressView
+    }()
+    
+    private lazy var nowPlayingTimeLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = .secondaryLabel
+        label.text = "0:00 / 0:00"
+        label.textAlignment = .center
+        return label
     }()
     
     private var currentFiles: [MediaFile] = []
@@ -3245,7 +3305,15 @@ class MainViewController: UIViewController {
         view.addSubview(sourceHistoryContainerView)
         view.addSubview(backButton)
         view.addSubview(tableView)
-        view.addSubview(nowPlayingButton)
+        view.addSubview(nowPlayingContainer)
+        
+        // Setup now playing container
+        nowPlayingContainer.addSubview(nowPlayingContentView)
+        nowPlayingContentView.addSubview(trackTitleLabel)
+        nowPlayingContentView.addSubview(nowPlayingPlayPauseButton)
+        nowPlayingContentView.addSubview(nowPlayingChevronButton)
+        nowPlayingContainer.addSubview(nowPlayingProgressView)
+        nowPlayingContainer.addSubview(nowPlayingTimeLabel)
         
         // Setup source history container
         sourceHistoryContainerView.addSubview(sourceHistoryLabel)
@@ -3288,12 +3356,48 @@ class MainViewController: UIViewController {
             tableView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: nowPlayingButton.topAnchor, constant: -8),
+            tableView.bottomAnchor.constraint(equalTo: nowPlayingContainer.topAnchor, constant: -8),
             
-            nowPlayingButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            nowPlayingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            nowPlayingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            nowPlayingButton.heightAnchor.constraint(equalToConstant: 44)
+            // Now Playing Container
+            nowPlayingContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            nowPlayingContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            nowPlayingContainer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            nowPlayingContainer.heightAnchor.constraint(equalToConstant: 80),
+            
+            // Now Playing Content View
+            nowPlayingContentView.topAnchor.constraint(equalTo: nowPlayingContainer.topAnchor, constant: 12),
+            nowPlayingContentView.leadingAnchor.constraint(equalTo: nowPlayingContainer.leadingAnchor, constant: 16),
+            nowPlayingContentView.trailingAnchor.constraint(equalTo: nowPlayingContainer.trailingAnchor, constant: -16),
+            nowPlayingContentView.heightAnchor.constraint(equalToConstant: 32),
+            
+            // Track Title Label
+            trackTitleLabel.leadingAnchor.constraint(equalTo: nowPlayingContentView.leadingAnchor),
+            trackTitleLabel.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
+            trackTitleLabel.trailingAnchor.constraint(equalTo: nowPlayingPlayPauseButton.leadingAnchor, constant: -12),
+            
+            // Play/Pause Button
+            nowPlayingPlayPauseButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
+            nowPlayingPlayPauseButton.trailingAnchor.constraint(equalTo: nowPlayingChevronButton.leadingAnchor, constant: -8),
+            nowPlayingPlayPauseButton.widthAnchor.constraint(equalToConstant: 32),
+            nowPlayingPlayPauseButton.heightAnchor.constraint(equalToConstant: 32),
+            
+            // Chevron Button
+            nowPlayingChevronButton.centerYAnchor.constraint(equalTo: nowPlayingContentView.centerYAnchor),
+            nowPlayingChevronButton.trailingAnchor.constraint(equalTo: nowPlayingContentView.trailingAnchor),
+            nowPlayingChevronButton.widthAnchor.constraint(equalToConstant: 24),
+            nowPlayingChevronButton.heightAnchor.constraint(equalToConstant: 24),
+            
+            // Progress View
+            nowPlayingProgressView.topAnchor.constraint(equalTo: nowPlayingContentView.bottomAnchor, constant: 8),
+            nowPlayingProgressView.leadingAnchor.constraint(equalTo: nowPlayingContainer.leadingAnchor, constant: 16),
+            nowPlayingProgressView.trailingAnchor.constraint(equalTo: nowPlayingContainer.trailingAnchor, constant: -16),
+            nowPlayingProgressView.heightAnchor.constraint(equalToConstant: 4),
+            
+            // Time Label
+            nowPlayingTimeLabel.topAnchor.constraint(equalTo: nowPlayingProgressView.bottomAnchor, constant: 4),
+            nowPlayingTimeLabel.leadingAnchor.constraint(equalTo: nowPlayingContainer.leadingAnchor, constant: 16),
+            nowPlayingTimeLabel.trailingAnchor.constraint(equalTo: nowPlayingContainer.trailingAnchor, constant: -16),
+            nowPlayingTimeLabel.bottomAnchor.constraint(equalTo: nowPlayingContainer.bottomAnchor, constant: -8)
         ])
     }
     
@@ -3347,6 +3451,28 @@ class MainViewController: UIViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] recentSources in
                 self?.updateSourceHistory(recentSources)
+            }
+            .store(in: &cancellables)
+        
+        // Now Playing bindings
+        coordinator.audioPlayer.$playerState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.updateNowPlayingSection(state)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$currentTime
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] time in
+                self?.updateNowPlayingProgress(time)
+            }
+            .store(in: &cancellables)
+        
+        coordinator.audioPlayer.$currentFile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] file in
+                self?.updateNowPlayingTrackInfo(file)
             }
             .store(in: &cancellables)
     }
@@ -3618,6 +3744,73 @@ class MainViewController: UIViewController {
         let nowPlayingVC = SimpleNowPlayingViewController(coordinator: coordinator)
         let nav = UINavigationController(rootViewController: nowPlayingVC)
         present(nav, animated: true)
+    }
+    
+    @objc private func nowPlayingPlayPauseTapped() {
+        print("🎮 [MainVC] Now Playing Play/Pause button tapped - current state: \(coordinator.audioPlayer.playerState)")
+        switch coordinator.audioPlayer.playerState {
+        case .playing:
+            print("🎮 [MainVC] Pausing playback")
+            coordinator.audioPlayer.pause()
+        case .paused, .stopped:
+            print("🎮 [MainVC] Starting playback")
+            coordinator.audioPlayer.play()
+        default:
+            print("🎮 [MainVC] Cannot play/pause in current state: \(coordinator.audioPlayer.playerState)")
+            break
+        }
+    }
+    
+    // MARK: - Now Playing Section Updates
+    
+    private func updateNowPlayingSection(_ state: AudioPlayerState) {
+        let shouldShow = (state == .playing || state == .paused)
+        
+        UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
+            self.nowPlayingContainer.isHidden = !shouldShow
+            self.nowPlayingContainer.alpha = shouldShow ? 1.0 : 0.0
+        }
+        
+        // Update play/pause button
+        switch state {
+        case .playing:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Pause"
+        case .paused, .stopped:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Play"
+        default:
+            nowPlayingPlayPauseButton.setImage(UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)), for: .normal)
+            nowPlayingPlayPauseButton.accessibilityLabel = "Play"
+        }
+    }
+    
+    private func updateNowPlayingProgress(_ time: TimeInterval) {
+        let duration = coordinator.audioPlayer.duration
+        
+        // Update progress bar
+        if duration > 0 {
+            let progress = Float(time / duration)
+            nowPlayingProgressView.progress = progress
+        } else {
+            nowPlayingProgressView.progress = 0.0
+        }
+        
+        // Update time label
+        let currentMinutes = Int(time) / 60
+        let currentSeconds = Int(time) % 60
+        let totalMinutes = Int(duration) / 60
+        let totalSeconds = Int(duration) % 60
+        
+        nowPlayingTimeLabel.text = String(format: "%d:%02d / %d:%02d", currentMinutes, currentSeconds, totalMinutes, totalSeconds)
+    }
+    
+    private func updateNowPlayingTrackInfo(_ file: MediaFile?) {
+        if let file = file {
+            trackTitleLabel.text = file.name
+        } else {
+            trackTitleLabel.text = "No Track"
+        }
     }
 }
 
